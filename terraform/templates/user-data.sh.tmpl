@@ -1,0 +1,188 @@
+#!/bin/bash
+set -e
+exec > >(tee /var/log/fundinv-bootstrap.log) 2>&1
+echo "=== FundInv Bootstrap — $(date) ==="
+
+# ──────────────────────────────────────────────────────────
+# 1. System packages
+# ──────────────────────────────────────────────────────────
+dnf update -y
+dnf install -y docker postgresql16 jq cronie
+
+# WeasyPrint system dependencies (for PDF generation)
+dnf install -y cairo pango gdk-pixbuf2 libffi-devel
+
+# ──────────────────────────────────────────────────────────
+# 2. Docker
+# ──────────────────────────────────────────────────────────
+systemctl enable docker
+systemctl start docker
+usermod -a -G docker ec2-user
+
+# ──────────────────────────────────────────────────────────
+# 3. Fetch secrets from AWS Secrets Manager
+# ──────────────────────────────────────────────────────────
+DB_SECRET=$(aws secretsmanager get-secret-value \
+  --region ${aws_region} \
+  --secret-id ${db_secret_arn} \
+  --query SecretString --output text 2>/dev/null || echo '{}')
+
+APP_SECRET=$(aws secretsmanager get-secret-value \
+  --region ${aws_region} \
+  --secret-id ${app_secret_arn} \
+  --query SecretString --output text 2>/dev/null || echo '{}')
+
+DB_URL=$(echo "$DB_SECRET" | jq -r '.url // ""')
+DB_HOST=$(echo "$DB_SECRET" | jq -r '.host // ""')
+DB_PORT=$(echo "$DB_SECRET" | jq -r '.port // "5432"')
+DB_NAME=$(echo "$DB_SECRET" | jq -r '.dbname // ""')
+DB_USER=$(echo "$DB_SECRET" | jq -r '.username // ""')
+DB_PASS=$(echo "$DB_SECRET" | jq -r '.password // ""')
+
+# ──────────────────────────────────────────────────────────
+# 4. Application directory + .env
+# ──────────────────────────────────────────────────────────
+mkdir -p /opt/fundinv
+cd /opt/fundinv
+
+cat > .env << ENVEOF
+DATABASE_URL=$DB_URL
+SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.SECRET_KEY // ""')
+JWT_ALGORITHM=$(echo "$APP_SECRET" | jq -r '.JWT_ALGORITHM // "HS256"')
+JWT_EXPIRY_MINUTES=$(echo "$APP_SECRET" | jq -r '.JWT_EXPIRY_MINUTES // "60"')
+ENVIRONMENT=production
+FRONTEND_URL=$(echo "$APP_SECRET" | jq -r '.FRONTEND_URL // ""')
+AUTO_MIGRATE=true
+STRIPE_SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.STRIPE_SECRET_KEY // ""')
+STRIPE_WEBHOOK_SECRET=$(echo "$APP_SECRET" | jq -r '.STRIPE_WEBHOOK_SECRET // ""')
+ALPACA_API_KEY=$(echo "$APP_SECRET" | jq -r '.ALPACA_API_KEY // ""')
+ALPACA_SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.ALPACA_SECRET_KEY // ""')
+ALPACA_BASE_URL=$(echo "$APP_SECRET" | jq -r '.ALPACA_BASE_URL // "https://paper-api.alpaca.markets"')
+ALPACA_DATA_URL=$(echo "$APP_SECRET" | jq -r '.ALPACA_DATA_URL // "https://data.alpaca.markets"')
+SMTP_EMAIL=$(echo "$APP_SECRET" | jq -r '.SMTP_EMAIL // ""')
+SMTP_PASSWORD=$(echo "$APP_SECRET" | jq -r '.SMTP_PASSWORD // ""')
+ENVEOF
+
+chmod 600 .env
+
+# ──────────────────────────────────────────────────────────
+# 5. Nginx reverse proxy config
+# ──────────────────────────────────────────────────────────
+cat > nginx.conf << 'NGINXEOF'
+events { worker_connections 1024; }
+
+http {
+  include       /etc/nginx/mime.types;
+  default_type  application/octet-stream;
+
+  server {
+    listen 80;
+
+    location /api/ {
+      proxy_pass http://127.0.0.1:8000;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+      proxy_pass http://127.0.0.1:3000;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+  }
+}
+NGINXEOF
+
+# ──────────────────────────────────────────────────────────
+# 6. ECR login + pull images
+# ──────────────────────────────────────────────────────────
+ECR_REGISTRY="${data.aws_caller_identity.current.account_id}.dkr.ecr.${aws_region}.amazonaws.com"
+
+aws ecr get-login-password --region ${aws_region} | \
+  docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+docker pull "$ECR_REGISTRY/${project_name}-backend-${environment}:latest" &
+docker pull "$ECR_REGISTRY/${project_name}-frontend-${environment}:latest" &
+docker pull nginx:alpine &
+wait
+
+# ──────────────────────────────────────────────────────────
+# 7. Stop old containers if they exist
+# ──────────────────────────────────────────────────────────
+docker stop fundinv-backend fundinv-frontend fundinv-nginx 2>/dev/null || true
+docker rm fundinv-backend fundinv-frontend fundinv-nginx 2>/dev/null || true
+
+# ──────────────────────────────────────────────────────────
+# 8. Start containers
+# ──────────────────────────────────────────────────────────
+docker run -d --name fundinv-backend \
+  --restart unless-stopped \
+  --env-file /opt/fundinv/.env \
+  -p 127.0.0.1:8000:8000 \
+  "$ECR_REGISTRY/${project_name}-backend-${environment}:latest"
+
+docker run -d --name fundinv-frontend \
+  --restart unless-stopped \
+  -e NEXT_PUBLIC_API_URL= \
+  -p 127.0.0.1:3000:3000 \
+  "$ECR_REGISTRY/${project_name}-frontend-${environment}:latest"
+
+docker run -d --name fundinv-nginx \
+  --restart unless-stopped \
+  -p 80:80 \
+  -v /opt/fundinv/nginx.conf:/etc/nginx/nginx.conf:ro \
+  nginx:alpine
+
+# ──────────────────────────────────────────────────────────
+# 9. Wait for services to be healthy
+# ──────────────────────────────────────────────────────────
+echo "Waiting for services..."
+for i in $(seq 1 30); do
+  if curl -sf http://localhost:80/api/test > /dev/null 2>&1; then
+    echo "Services healthy after $((i * 2))s"
+    break
+  fi
+  sleep 2
+done
+
+# ──────────────────────────────────────────────────────────
+# 10. Daily backup cron (fetches secrets once, reuses vars)
+# ──────────────────────────────────────────────────────────
+cat > /usr/local/bin/fundinv-backup << 'BACKUPEOF'
+#!/bin/bash
+set -e
+
+DB_SECRET=$(aws secretsmanager get-secret-value \
+  --region ${aws_region} \
+  --secret-id ${db_secret_arn} \
+  --query SecretString --output text)
+
+DB_HOST=$(echo "$DB_SECRET" | jq -r '.host')
+DB_PORT=$(echo "$DB_SECRET" | jq -r '.port')
+DB_NAME=$(echo "$DB_SECRET" | jq -r '.dbname')
+DB_USER=$(echo "$DB_SECRET" | jq -r '.username')
+DB_PASS=$(echo "$DB_SECRET" | jq -r '.password')
+
+TIMESTAMP=$(date +%Y-%m-%d/%H%M)
+PGPASSWORD="$DB_PASS" pg_dump \
+  -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+  --no-owner --no-acl | gzip | \
+  aws s3 cp - "s3://${backups_bucket}/backups/$TIMESTAMP/fundinv.sql.gz"
+
+echo "Backup complete: $TIMESTAMP"
+BACKUPEOF
+
+chmod +x /usr/local/bin/fundinv-backup
+
+cat > /etc/cron.d/fundinv-backup << CRONEOF
+0 2 * * * root /usr/local/bin/fundinv-backup >> /var/log/fundinv-backup.log 2>&1
+CRONEOF
+
+systemctl enable crond
+systemctl start crond
+
+echo "=== FundInv Bootstrap Complete ==="

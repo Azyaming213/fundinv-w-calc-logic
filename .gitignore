@@ -1,0 +1,69 @@
+# Python
+Server/venv/
+Server/.venv/
+.venv/
+.env
+Server/__pycache__/
+Server/**/__pycache__/
+*.pyc
+Server/.ruff_cache/
+
+# Node
+Client/node_modules/
+Client/.next/
+Client/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Personal
+Start_Up for Sprint 1
+
+# Personal documentation files
+*.docx
+.~lock.*#
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+Client/.pnp
+Client/.pnp.*
+Client/.yarn/*
+Client/.yarn/patches
+Client/.yarn/plugins
+Client/.yarn/releases
+Client/.yarn/versions
+
+# testing
+/Client/coverage
+
+# next.js
+/Client/out/
+
+# production
+/Client/build
+
+# misc
+/Client/.DS_Store
+/Client/*.pem
+
+# debug
+/Client/npm-debug.log*
+/Client/yarn-debug.log*
+/Client/yarn-error.log*
+/Client/.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+/Client/.env*
+
+# vercel
+/Client/.vercel
+
+# typescript
+/Client/*.tsbuildinfo
+
+.aider*

@@ -1,0 +1,21 @@
+# Gitleaks configuration — detect hardcoded secrets in the repo
+# Used by: .github/workflows/deploy.yml (security-scan job)
+
+title: FundInv Gitleaks Config
+
+[allowlist]
+  description = "Allow known test/seed data values"
+
+  paths = [
+    '''config/scripts/v0.0.1_seed_data.sql''',
+    '''terraform/terraform.tfvars.example''',
+    '''terraform/templates/user-data.sh.tmpl''',
+  ]
+
+[[rules]]
+  id = "generic-api-key"
+  [rules.allowlist]
+    paths = [
+      '''\.env\.template$''',
+      '''terraform\.tfvars\.example$''',
+    ]

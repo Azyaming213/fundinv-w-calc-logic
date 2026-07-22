@@ -1,0 +1,11 @@
+# ────────────────────────────────────────────────
+# Terraform Backend Configuration
+# Copy to backend.conf  and run:
+#   terraform init -backend-config=backend.conf
+# ────────────────────────────────────────────────
+
+bucket         = "fundinv-terraform-state-dev"
+key            = "terraform.tfstate"
+region         = "us-east-1"
+encrypt        = true
+dynamodb_table = "fundinv-terraform-lock"

@@ -1,0 +1,41 @@
+# ────────────────────────────────────────────────
+# FundInv — Terraform Variable Values
+# Copy to terraform.tfvars and fill in your values
+# ────────────────────────────────────────────────
+
+aws_region   = "us-east-1"
+environment  = "dev"
+project_name = "fundinv"
+key_name     = "fundinv-key" # SSH key pair name in AWS
+
+# ── RDS ──
+db_name                = "fundinv"
+db_username            = "fundinv_admin"
+db_instance_class      = "db.t3.small"
+db_allocated_storage   = 20
+db_deletion_protection = false
+
+# ── EC2 ──
+ec2_instance_type = "t3.medium"
+ec2_min_size      = 1
+ec2_max_size      = 2
+ec2_desired_size  = 1
+
+# ── Application Secrets ──
+# Generate a strong random key: openssl rand -base64 64
+app_secret_key = "change-me-generate-with-openssl-rand-base64-64"
+
+# Stripe (test keys)
+stripe_secret_key    = "sk_test_..."
+stripe_webhook_secret = "whsec_..."
+
+# Alpaca Markets (paper trading)
+alpaca_api_key    = "PK..."
+alpaca_secret_key = "..."
+
+# SMTP (Gmail)
+smtp_email    = "noreply@example.com"
+smtp_password = "..."
+
+# Set to the ALB DNS name after first apply: http://<alb-dns>
+frontend_url = ""

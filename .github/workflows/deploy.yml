@@ -1,0 +1,195 @@
+name: Build, Scan & Deploy
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'terraform/**'
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_BACKEND: fundinv-backend-dev
+  ECR_FRONTEND: fundinv-frontend-dev
+
+jobs:
+  # ──────────────────────────────────────────────────────
+  # Security: Secret scanning + SAST
+  # ──────────────────────────────────────────────────────
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect hardcoded secrets
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: .gitleaks.toml
+        continue-on-error: true
+
+      - name: Run Trivy config scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+  # ──────────────────────────────────────────────────────
+  # Build & Push Backend Image
+  # ──────────────────────────────────────────────────────
+  backend:
+    name: Backend Image
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ secrets.AWS_ACCOUNT_ID }}
+
+      - name: Build backend image
+        run: |
+          docker build \
+            -f terraform/templates/Dockerfile.backend \
+            -t ${{ env.ECR_BACKEND }}:latest \
+            -t ${{ env.ECR_BACKEND }}:${{ github.sha }} \
+            .
+
+      - name: Scan backend image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_BACKEND }}:latest
+          format: sarif
+          output: trivy-backend.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-backend.sarif
+          category: trivy-backend
+
+      - name: Push backend to ECR
+        run: |
+          export REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_BACKEND }}"
+          docker tag ${{ env.ECR_BACKEND }}:latest "$REPO:latest"
+          docker tag ${{ env.ECR_BACKEND }}:${{ github.sha }} "$REPO:${{ github.sha }}"
+          docker push "$REPO:latest"
+          docker push "$REPO:${{ github.sha }}"
+
+  # ──────────────────────────────────────────────────────
+  # Build & Push Frontend Image
+  # ──────────────────────────────────────────────────────
+  frontend:
+    name: Frontend Image
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ secrets.AWS_ACCOUNT_ID }}
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            -f terraform/templates/Dockerfile.frontend \
+            -t ${{ env.ECR_FRONTEND }}:latest \
+            -t ${{ env.ECR_FRONTEND }}:${{ github.sha }} \
+            .
+
+      - name: Scan frontend image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_FRONTEND }}:latest
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-frontend.sarif
+          category: trivy-frontend
+
+      - name: Push frontend to ECR
+        run: |
+          export REPO="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_FRONTEND }}"
+          docker tag ${{ env.ECR_FRONTEND }}:latest "$REPO:latest"
+          docker tag ${{ env.ECR_FRONTEND }}:${{ github.sha }} "$REPO:${{ github.sha }}"
+          docker push "$REPO:latest"
+          docker push "$REPO:${{ github.sha }}"
+
+  # ──────────────────────────────────────────────────────
+  # Deploy — rolling instance refresh via ASG
+  # ──────────────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    environment: production
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Trigger ASG instance refresh
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name fundinv-asg-dev \
+            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 120}' \
+            --strategy Rolling
+
+      - name: Wait for instance refresh to complete
+        run: |
+          ASG_NAME="fundinv-asg-dev"
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "$ASG_NAME" \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text 2>/dev/null || echo 'Cancelled')
+            echo "Instance refresh status: $STATUS"
+            case "$STATUS" in
+              Successful|Cancelled|Failed)
+                break
+                ;;
+            esac
+            sleep 30
+          done
+          if [ "$STATUS" != "Successful" ]; then
+            echo "Instance refresh finished with status: $STATUS"
+            exit 1
+          fi
+          echo "Deploy complete!"
