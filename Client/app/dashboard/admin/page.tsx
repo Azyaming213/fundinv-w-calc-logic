@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import Card from '../../components/Card';
-import Button from '../../components/Button';
 import AuthGuard from '../../components/AuthGuard';
 import { api } from '../../lib/api';
 import { CLAIMS } from '../../lib/appconstants';

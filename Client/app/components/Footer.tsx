@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { API_BASE } from '../lib/api';
 
 export default function Footer() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/test')
+    fetch(`${API_BASE}/api/test`)
       .then((res) => res.json())
       .then(() => setBackendStatus('connected'))
       .catch(() => setBackendStatus('disconnected'));

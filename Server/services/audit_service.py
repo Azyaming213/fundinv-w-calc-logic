@@ -62,6 +62,7 @@ def log_event(
     status: Optional[str] = None,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
+    commit: bool = True,
 ) -> AuditLog:
     audit = AuditLog(
         user_id=user_id,
@@ -75,6 +76,9 @@ def log_event(
         user_agent=user_agent,
     )
     db.add(audit)
-    db.commit()
-    db.refresh(audit)
+    if commit:
+        db.commit()
+        db.refresh(audit)
+    else:
+        db.flush()
     return audit

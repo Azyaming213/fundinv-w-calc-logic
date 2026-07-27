@@ -1,4 +1,4 @@
-import { InputHTMLAttributes, forwardRef } from 'react';
+import { InputHTMLAttributes, forwardRef, useId } from 'react';
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string;
@@ -7,14 +7,17 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 const Input = forwardRef<HTMLInputElement, InputProps>(({ label, error, helperText, className = '', ...props }, ref) => {
+  const generatedId = useId();
+  const inputId = props.id || generatedId;
   return (
     <div className="flex flex-col gap-1.5">
       {label && (
-        <label className="text-sm font-medium text-fundinv-primary">
+        <label htmlFor={inputId} className="text-sm font-medium text-fundinv-primary">
           {label}
         </label>
       )}
       <input
+        id={inputId}
         ref={ref}
         className={`px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-2 focus:ring-fundinv-accent ${
           error ? 'border-fundinv-danger' : 'border-fundinv-border'

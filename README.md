@@ -22,7 +22,7 @@ fundinv-solo/
 
 | File | Purpose |
 |------|---------|
-| `table/v0.0.1_init_schema.sql` | Full DDL: creates `fundinv` and `fundinv_auth` schemas, all 17 tables with indexes, FKs, and defaults |
+| `table/v0.0.1_init_schema.sql` | Full DDL: creates `fundinv` and `fundinv_auth` schemas, including normalized positions, valuations, settlement ledger, indexes, FKs, and constraints |
 | `scripts/v0.0.1_seed_data.sql` | Seed data: 4 roles, 5 users, 20 funds, sample flows, transactions, portfolio holdings, invites |
 
 ### `Server/` — Python FastAPI Backend
@@ -35,8 +35,8 @@ fundinv-solo/
 | `dependencies.py` | FastAPI dependency injection: `get_current_user` (JWT decode), `require_role` (RBAC guard) |
 | `appconstants.py` | Centralized role names, permission claims, helper functions — single source of truth for RBAC |
 | `alembic.ini` | Alembic migration config |
-| `alembic/` | Migration versions (7 scripts tracking schema evolution from v0.0.1 → v0.2.7) |
-| `models/` | 15 SQLAlchemy ORM models across 2 PostgreSQL schemas (`fundinv_auth`, `fundinv`) |
+| `alembic/` | Versioned schema migrations; current head is `v0.4.4_security_reporting` |
+| `models/` | SQLAlchemy ORM models across 2 PostgreSQL schemas (`fundinv_auth`, `fundinv`) |
 | `routers/` | 8 FastAPI routers: auth, admin, funds, wallet, portfolio, trading, articles, manager |
 | `services/` | Business logic: auth (bcrypt/JWT), email (yagmail/SMTP), MFA (TOTP), Alpaca API, audit logging |
 | `schemas/` | Pydantic models for request/response validation |
@@ -115,6 +115,30 @@ cd Client && npm run dev
 - **Backend:** [http://localhost:8000](http://localhost:8000) — API docs at [http://localhost:8000/docs](http://localhost:8000/docs)
 - **Frontend:** [http://localhost:3000](http://localhost:3000)
 
+### Automated setup scripts
+
+For a clean extracted copy, use the platform-specific bootstrap script. Both
+scripts preserve an existing `.env` and existing database, create them only
+when absent, install dependencies, apply migrations, and run basic checks.
+
+```bash
+# Linux
+bash bin/setup_linux.sh
+
+# Windows (run from Git Bash with Docker Desktop running)
+bash bin/setup_windows_gitbash.sh
+```
+
+Set `INSTALL_PLAYWRIGHT=1` before the command if the machine also needs the
+Chromium browser used by `npm run test:e2e`.
+
+### Preparing a source-only zip
+
+Do not include machine-specific or reinstallable artifacts: `.env`,
+`Client/node_modules`, `Client/.next`, `Server/venv`, Python caches, test
+reports, logs, or OS/IDE metadata. Keep `.env.template`, lockfiles, migrations,
+source code, tests, configuration SQL, setup scripts, README, and documentation.
+
 ### Seed Users (after running seed data)
 
 | Email | Password | Role |
@@ -131,7 +155,7 @@ cd Client && npm run dev
 
 ### Investor
 - View portfolio dashboard with charts and P&L tracking
-- Request deposits into approved manager funds (operations review, Stripe Checkout payment link)
+- Request deposits into a specifically selected approved fund. Operations approval creates a Stripe Checkout payment link; units are issued only after Stripe confirms payment.
 - Request withdrawals from approved manager funds (operations review, Stripe Connect payout)
 - Browse and invest in funds
 - Buy/sell stocks via Alpaca paper trading
@@ -161,7 +185,7 @@ cd Client && npm run dev
 
 ### Operations
 - Review pending deposit/withdrawal requests
-- Approve or reject requests (sends Stripe Checkout or Connect setup links)
+- Approve or reject requests. Approval is authorization, not settlement: deposits still require investor payment and withdrawals require payout processing.
 - Monitor provider-confirmed payment and payout completion
 - Reject requests with reason (refunds wallet on withdrawals)
 - Review and approve/reject manager-created funds
@@ -178,6 +202,29 @@ cd Client && npm run dev
 | **Email Notifications** | HTML emails via SMTP (yagmail): invite links, fund flow approved/completed/rejected updates |
 | **MFA / 2FA** | TOTP-based (pyotp): setup with QR code, verify on login, optional disable |
 | **PDF Reports** | Portfolio summary export via WeasyPrint (HTML to PDF) |
+
+## Fund-flow lifecycle
+
+Deposits are fund subscriptions, not unallocated wallet top-ups:
+
+1. The investor selects an investment account, an approved fund/ETF, and an amount.
+2. Operations selects **Approve & Request Payment**.
+3. The investor opens **Fund Flows** and selects **Pay now**.
+4. Stripe's signed webhook confirms the payment.
+5. FundInv issues units at the current NAV, updates the normalized position and compatibility balance, records one idempotent settlement-ledger entry, and marks the flow completed.
+
+An `approved_pending_payment` request has not changed the investor's balance yet. Only `completed` means units and account value have been updated.
+
+## Scheduler safety
+
+`ENABLE_SCHEDULER=true` enables maintenance, reconciliation, reporting, and the daily accounting snapshot. Automated rebalancing remains off unless the separate `ENABLE_AUTOMATED_TRADING=true` switch is deliberately enabled. In a multi-instance deployment, run the scheduler in exactly one dedicated worker rather than in every API instance.
+
+```bash
+cd Server
+ENABLE_SCHEDULER=false venv/bin/python scheduler_worker.py
+```
+
+The API process should keep `ENABLE_SCHEDULER=false`; the worker registers and runs the schedules itself. Keep `ENABLE_AUTOMATED_TRADING=false` unless real automatic orders are explicitly authorised.
 | **Scheduled Jobs** | APScheduler: daily reconciliation, invite cleanup, weekly portfolio summaries, monthly performance reports, auto-rebalancing |
 | **Database Migrations** | Alembic versioned migrations (7 versions); optional auto-migrate on startup |
 | **Role-Based Access** | 4 roles with granular claims; enforced at API level (dependencies) and UI level (AuthGuard) |

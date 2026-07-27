@@ -55,8 +55,15 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         connection.execute(text("SET search_path TO fundinv, fundinv_auth, public"))
+        # SQLAlchemy 2 starts an implicit transaction for the SET statement.
+        # Commit it before Alembic opens its migration transaction; otherwise
+        # successful migrations are rolled back when this connection closes.
+        connection.commit()
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            version_table="alembic_version",
+            version_table_schema="fundinv",
         )
 
         with context.begin_transaction():

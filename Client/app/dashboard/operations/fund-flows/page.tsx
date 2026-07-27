@@ -173,6 +173,7 @@ export default function OperationsFundFlowsPage() {
                   <tr className="border-b border-fundinv-border">
                     <th className="text-left py-3 px-6 font-medium text-fundinv-muted">Investor</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Type</th>
+                    <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Fund</th>
                     <th className="text-right py-3 px-2 font-medium text-fundinv-muted">Amount</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Status</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Request ID</th>
@@ -190,6 +191,7 @@ export default function OperationsFundFlowsPage() {
                         <div className="text-fundinv-primary">{flow.investor_name || '—'}</div>
                         <div className="text-xs text-fundinv-muted">{flow.investor_email || '—'}</div>
                       </td>
+                      <td className="py-3 px-2 text-sm text-fundinv-primary">{flow.fund_name || 'Unallocated'}</td>
                       <td className="py-3 px-2">
                         <span className={`px-2 py-1 text-xs font-medium rounded capitalize ${
                           flow.flow_type === 'deposit' ? 'text-fundinv-accent bg-blue-50' : 'text-fundinv-warning bg-amber-50'
@@ -204,6 +206,7 @@ export default function OperationsFundFlowsPage() {
                         <span className={`px-2 py-1 text-xs font-medium rounded capitalize ${statusColor(flow.status)}`}>
                           {flow.status.replace(/_/g, ' ')}
                         </span>
+                        {flow.status_message && <p className="mt-1 max-w-[220px] text-xs text-fundinv-muted normal-case">{flow.status_message}</p>}
                       </td>
                       <td className="py-3 px-2 text-xs text-fundinv-muted font-mono">{flow.request_id}</td>
                       <td className="py-3 px-2 text-xs text-fundinv-muted whitespace-nowrap">{formatDate(flow.requested_at)}</td>
@@ -226,7 +229,7 @@ export default function OperationsFundFlowsPage() {
                               disabled={actionLoading === flow.id}
                               className="px-2 py-1 text-xs"
                             >
-                              {actionLoading === flow.id ? '...' : 'Approve'}
+                              {actionLoading === flow.id ? '...' : flow.flow_type === 'deposit' ? 'Approve & Request Payment' : 'Approve'}
                             </Button>
                           )}
                           {canComplete(flow.status) && (

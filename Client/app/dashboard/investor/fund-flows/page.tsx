@@ -92,6 +92,7 @@ export default function InvestorFundFlowsPage() {
                 <thead>
                   <tr className="border-b border-fundinv-border">
                     <th className="text-left py-3 px-6 font-medium text-fundinv-muted">Type</th>
+                    <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Fund</th>
                     <th className="text-right py-3 px-2 font-medium text-fundinv-muted">Amount</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Status</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Request ID</th>
@@ -110,6 +111,9 @@ export default function InvestorFundFlowsPage() {
                           {flow.flow_type}
                         </span>
                       </td>
+                      <td className="py-3 px-2 text-sm text-fundinv-primary">
+                        {flow.fund_name || 'Unallocated'}
+                      </td>
                       <td className="py-3 px-2 text-right font-mono text-fundinv-primary">
                         {formatAmount(flow.amount)}
                       </td>
@@ -117,6 +121,15 @@ export default function InvestorFundFlowsPage() {
                         <span className={`px-2 py-1 text-xs font-medium rounded capitalize ${statusColor(flow.status)}`}>
                           {flow.status.replace(/_/g, ' ')}
                         </span>
+                        {flow.status_message && <p className="mt-1 max-w-[220px] text-xs text-fundinv-muted normal-case">{flow.status_message}</p>}
+                        {flow.next_action === 'investor_payment' && flow.payment_url && (
+                          <a
+                            href={flow.payment_url}
+                            className="inline-flex mt-2 px-3 py-1.5 rounded-md bg-fundinv-accent text-white text-xs font-medium hover:opacity-90"
+                          >
+                            Pay now
+                          </a>
+                        )}
                       </td>
                       <td className="py-3 px-2 text-xs text-fundinv-muted font-mono">{flow.request_id}</td>
                       <td className="py-3 px-2 text-xs text-fundinv-muted whitespace-nowrap">{formatDate(flow.requested_at)}</td>

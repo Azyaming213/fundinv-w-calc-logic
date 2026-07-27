@@ -7,7 +7,7 @@ import Button from '../components/Button';
 import Input from '../components/Input';
 import Card from '../components/Card';
 import { api } from '../lib/api';
-import { setToken, getDashboardPath, User } from '../lib/auth';
+import { setSessionUser, getDashboardPath, User } from '../lib/auth';
 import type { LoginResponse } from '../lib/types';
 
 function LoginForm() {
@@ -18,6 +18,8 @@ function LoginForm() {
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [expired, setExpired] = useState(false);
+    const [mfaToken, setMfaToken] = useState<string | null>(null);
+    const [mfaCode, setMfaCode] = useState('');
 
     useEffect(() => {
         if (searchParams.get('expired') === 'true') {
@@ -37,11 +39,50 @@ function LoginForm() {
                 password,
             });
 
-            setToken(data.access_token);
+            if (data.mfa_required && data.mfa_token) {
+                setMfaToken(data.mfa_token);
+                return;
+            }
+            if (!data.user) throw new Error('Login response did not include a user');
+            setSessionUser({
+                id: data.user.user_id,
+                email: data.user.email,
+                full_name: data.user.full_name,
+                role: data.user.role as User['role'],
+                is_active: data.user.is_active,
+                claims: data.user.claims || [],
+            });
             router.push(getDashboardPath(data.user.role as User['role']));
         } catch (err) {
             const message = (err as { message?: string }).message || 'Login failed';
             setError(message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleMfaSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!mfaToken) return;
+        setError(null);
+        setLoading(true);
+        try {
+            const data = await api.post<LoginResponse>('/api/auth/mfa/login', {
+                mfa_token: mfaToken,
+                code: mfaCode,
+            });
+            if (!data.user) throw new Error('MFA login response did not include a user');
+            setSessionUser({
+                id: data.user.user_id,
+                email: data.user.email,
+                full_name: data.user.full_name,
+                role: data.user.role as User['role'],
+                is_active: data.user.is_active,
+                claims: data.user.claims || [],
+            });
+            router.push(getDashboardPath(data.user.role as User['role']));
+        } catch (err) {
+            setError((err as { message?: string }).message || 'MFA verification failed');
         } finally {
             setLoading(false);
         }
@@ -61,7 +102,24 @@ function LoginForm() {
                     </div>
                 )}
 
-                <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+                <form onSubmit={mfaToken ? handleMfaSubmit : handleSubmit} className="flex flex-col gap-4">
+                    {mfaToken ? (
+                      <>
+                        <p className="text-sm text-fundinv-muted">Enter the six-digit code from your authenticator app.</p>
+                        <Input
+                          label="Authentication code"
+                          inputMode="numeric"
+                          pattern="[0-9]{6}"
+                          maxLength={6}
+                          value={mfaCode}
+                          onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          required
+                          disabled={loading}
+                          autoComplete="one-time-code"
+                        />
+                      </>
+                    ) : (
+                      <>
                     <Input
                         label="Email address"
                         type="email"
@@ -72,7 +130,6 @@ function LoginForm() {
                         disabled={loading}
                         autoComplete="email"
                     />
-
                     <Input
                         label="Password"
                         type="password"
@@ -83,6 +140,8 @@ function LoginForm() {
                         disabled={loading}
                         autoComplete="current-password"
                     />
+                      </>
+                    )}
 
                     {error && (
                         <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-md">
@@ -91,8 +150,14 @@ function LoginForm() {
                     )}
 
                     <Button type="submit" className="w-full mt-2" disabled={loading}>
-                        {loading ? 'Signing in...' : 'Sign in'}
+                        {loading ? 'Verifying...' : mfaToken ? 'Verify and sign in' : 'Sign in'}
                     </Button>
+
+                    {mfaToken && (
+                      <button type="button" onClick={() => { setMfaToken(null); setMfaCode(''); setError(null); }} className="text-xs text-fundinv-accent hover:underline">
+                        Use a different account
+                      </button>
+                    )}
 
                     <div className="text-center">
                         <a href="/forgot-password" className="text-xs text-fundinv-accent hover:underline">

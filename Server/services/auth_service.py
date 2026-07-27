@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import secrets
 
 from passlib.context import CryptContext
 from jose import jwt, JWTError
@@ -28,6 +29,7 @@ def create_access_token(user_id: str, role: str, email: str, full_name: str = ""
         "claims": claims or [],
         "exp": expire,
         "iat": datetime.now(timezone.utc),
+        "jti": secrets.token_urlsafe(24),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 

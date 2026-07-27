@@ -18,6 +18,8 @@ CREATE SCHEMA IF NOT EXISTS fundinv_auth;
 -- ============================================================
 DROP TABLE IF EXISTS fundinv.fund_targeting CASCADE;
 DROP TABLE IF EXISTS fundinv.fund_components CASCADE;
+DROP TABLE IF EXISTS fundinv.fund_valuations CASCADE;
+DROP TABLE IF EXISTS fundinv.fund_positions CASCADE;
 DROP TABLE IF EXISTS fundinv.invite_requests CASCADE;
 DROP TABLE IF EXISTS fundinv.feedback_tickets CASCADE;
 DROP TABLE IF EXISTS fundinv.fund_balance_entries CASCADE;
@@ -33,6 +35,8 @@ DROP TABLE IF EXISTS fundinv.audit_logs CASCADE;
 DROP TABLE IF EXISTS fundinv.invites CASCADE;
 DROP TABLE IF EXISTS fundinv.investors CASCADE;
 DROP TABLE IF EXISTS fundinv_auth.password_reset_tokens CASCADE;
+DROP TABLE IF EXISTS fundinv_auth.auth_sessions CASCADE;
+DROP TABLE IF EXISTS fundinv_auth.login_attempts CASCADE;
 DROP TABLE IF EXISTS fundinv_auth.users CASCADE;
 DROP TABLE IF EXISTS fundinv_auth.role_claims CASCADE;
 DROP TABLE IF EXISTS fundinv_auth.roles CASCADE;
@@ -93,6 +97,32 @@ CREATE TABLE fundinv_auth.users (
 
 CREATE INDEX ix_users_id ON fundinv_auth.users (id);
 CREATE UNIQUE INDEX ix_users_email ON fundinv_auth.users (email);
+
+CREATE TABLE fundinv_auth.auth_sessions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES fundinv_auth.users(id) ON DELETE CASCADE,
+    token_id VARCHAR(64) UNIQUE NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    revoked BOOLEAN NOT NULL DEFAULT FALSE,
+    revoked_at TIMESTAMP WITH TIME ZONE,
+    ip_address VARCHAR(64),
+    user_agent VARCHAR(500),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    last_seen_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX ix_auth_sessions_user_id ON fundinv_auth.auth_sessions (user_id);
+CREATE INDEX ix_auth_sessions_expires_at ON fundinv_auth.auth_sessions (expires_at);
+CREATE INDEX ix_auth_sessions_revoked ON fundinv_auth.auth_sessions (revoked);
+
+CREATE TABLE fundinv_auth.login_attempts (
+    id SERIAL PRIMARY KEY,
+    throttle_key VARCHAR(64) UNIQUE NOT NULL,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    window_started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    blocked_until TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX ix_login_attempts_blocked_until ON fundinv_auth.login_attempts (blocked_until);
 
 -- ============================================================
 -- 5. fundinv_auth.password_reset_tokens
@@ -212,6 +242,7 @@ CREATE TABLE fundinv.fund_targeting (
     investor_id INTEGER NOT NULL REFERENCES fundinv.investors(id) ON DELETE CASCADE,
     fund_id INTEGER NOT NULL REFERENCES fundinv.funds(id) ON DELETE CASCADE,
     is_visible BOOLEAN DEFAULT TRUE,
+    risk_tolerance VARCHAR(20) NOT NULL DEFAULT 'balanced' CHECK (risk_tolerance IN ('conservative','balanced','growth','aggressive')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
 
     CONSTRAINT uq_fund_targeting_investor_fund UNIQUE (investor_id, fund_id)
@@ -276,8 +307,9 @@ CREATE TABLE fundinv.fund_flows (
     id SERIAL PRIMARY KEY,
     investor_id INTEGER NOT NULL REFERENCES fundinv.investors(id),
     investment_account_id INTEGER REFERENCES fundinv.investment_accounts(id),
-    flow_type VARCHAR(20) NOT NULL,
-    amount NUMERIC(18,4) NOT NULL,
+    flow_type VARCHAR(20) NOT NULL CHECK (flow_type IN ('deposit', 'withdrawal', 'investment')),
+    amount NUMERIC(18,4) NOT NULL CHECK (amount > 0),
+    currency VARCHAR(3) NOT NULL DEFAULT 'USD' CHECK (currency ~ '^[A-Z]{3}$'),
     status VARCHAR(30) NOT NULL DEFAULT 'pending',
     request_id VARCHAR(100) UNIQUE NOT NULL,
     requested_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -313,8 +345,8 @@ CREATE TABLE fundinv.investment_transactions (
     trade_type VARCHAR(20) NOT NULL,
     entry VARCHAR(4),
     symbol VARCHAR(20) NOT NULL,
-    volume NUMERIC(18,4) NOT NULL,
-    price NUMERIC(18,8) NOT NULL,
+    volume NUMERIC(18,4) NOT NULL CHECK (volume > 0),
+    price NUMERIC(18,8) NOT NULL CHECK (price >= 0),
     profit NUMERIC(18,4) DEFAULT 0,
     commission NUMERIC(18,4) DEFAULT 0,
     swap NUMERIC(18,4) DEFAULT 0,
@@ -346,10 +378,18 @@ CREATE TABLE fundinv.portfolio_holdings (
     investor_id INTEGER NOT NULL REFERENCES fundinv.investors(id),
     fund_id INTEGER REFERENCES fundinv.funds(id),
     holding_date TIMESTAMP WITH TIME ZONE NOT NULL,
+    snapshot_date DATE,
     account_value NUMERIC(18,4) NOT NULL,
-    shareholding_pct NUMERIC(10,8) NOT NULL,
+    shareholding_pct NUMERIC(12,8) NOT NULL CHECK (shareholding_pct >= 0 AND shareholding_pct <= 100),
     daily_pnl NUMERIC(18,4) DEFAULT 0,
     fund_nav NUMERIC(18,4),
+    units NUMERIC(28,10),
+    nav_per_unit NUMERIC(18,8),
+    opening_value NUMERIC(18,4),
+    opening_shareholding_pct NUMERIC(12,8),
+    closing_value_before_flows NUMERIC(18,4),
+    net_flow NUMERIC(18,4) NOT NULL DEFAULT 0,
+    CONSTRAINT uq_portfolio_holdings_investor_fund_date UNIQUE (investor_id, fund_id, snapshot_date),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -357,6 +397,7 @@ CREATE INDEX ix_portfolio_holdings_id ON fundinv.portfolio_holdings (id);
 CREATE INDEX ix_portfolio_holdings_investor_id ON fundinv.portfolio_holdings (investor_id);
 CREATE INDEX ix_portfolio_holdings_holding_date ON fundinv.portfolio_holdings (holding_date);
 CREATE INDEX ix_portfolio_holdings_fund_id ON fundinv.portfolio_holdings (fund_id);
+CREATE INDEX ix_portfolio_holdings_snapshot_date ON fundinv.portfolio_holdings (snapshot_date);
 
 -- ============================================================
 -- 15. fundinv.fund_investments
@@ -432,6 +473,8 @@ CREATE TABLE fundinv.fund_balance_entries (
     fund_flow_id INTEGER REFERENCES fundinv.fund_flows(id),
     entry_type VARCHAR(30) NOT NULL,
     amount NUMERIC(18,4) NOT NULL,
+    units NUMERIC(28,10),
+    nav_per_unit NUMERIC(18,8),
     provider_reference VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     CONSTRAINT uq_fund_balance_entries_flow_id UNIQUE (fund_flow_id)
@@ -440,6 +483,44 @@ CREATE TABLE fundinv.fund_balance_entries (
 CREATE INDEX ix_fund_balance_entries_account_id ON fundinv.fund_balance_entries (investment_account_id);
 CREATE INDEX ix_fund_balance_entries_fund_id ON fundinv.fund_balance_entries (fund_id);
 CREATE INDEX ix_fund_balance_entries_flow_id ON fundinv.fund_balance_entries (fund_flow_id);
+
+-- ============================================================
+-- 20. fundinv.fund_positions (authoritative account/fund units)
+-- ============================================================
+CREATE TABLE fundinv.fund_positions (
+    id SERIAL PRIMARY KEY,
+    investment_account_id INTEGER NOT NULL REFERENCES fundinv.investment_accounts(id) ON DELETE CASCADE,
+    investor_id INTEGER NOT NULL REFERENCES fundinv.investors(id) ON DELETE CASCADE,
+    fund_id INTEGER NOT NULL REFERENCES fundinv.funds(id) ON DELETE CASCADE,
+    units NUMERIC(28,10) NOT NULL DEFAULT 0 CHECK (units >= 0),
+    cost_basis NUMERIC(18,4) NOT NULL DEFAULT 0 CHECK (cost_basis >= 0),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT uq_fund_positions_account_fund UNIQUE (investment_account_id, fund_id)
+);
+CREATE INDEX ix_fund_positions_account_id ON fundinv.fund_positions (investment_account_id);
+CREATE INDEX ix_fund_positions_investor_id ON fundinv.fund_positions (investor_id);
+CREATE INDEX ix_fund_positions_fund_id ON fundinv.fund_positions (fund_id);
+
+-- ============================================================
+-- 21. fundinv.fund_valuations (one Appendix 8 record per day)
+-- ============================================================
+CREATE TABLE fundinv.fund_valuations (
+    id SERIAL PRIMARY KEY,
+    fund_id INTEGER NOT NULL REFERENCES fundinv.funds(id) ON DELETE CASCADE,
+    valuation_date DATE NOT NULL,
+    opening_assets NUMERIC(18,4) NOT NULL CHECK (opening_assets >= 0),
+    daily_pnl NUMERIC(18,4) NOT NULL DEFAULT 0,
+    closing_assets_before_flows NUMERIC(18,4) NOT NULL,
+    net_flow NUMERIC(18,4) NOT NULL DEFAULT 0,
+    closing_assets NUMERIC(18,4) NOT NULL CHECK (closing_assets >= 0),
+    units_outstanding NUMERIC(28,10) NOT NULL CHECK (units_outstanding >= 0),
+    nav_per_unit NUMERIC(18,8) NOT NULL CHECK (nav_per_unit > 0),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT uq_fund_valuations_fund_date UNIQUE (fund_id, valuation_date)
+);
+CREATE INDEX ix_fund_valuations_fund_id ON fundinv.fund_valuations (fund_id);
+CREATE INDEX ix_fund_valuations_date ON fundinv.fund_valuations (valuation_date);
 
 -- ============================================================
 -- 20. fundinv.feedback_tickets

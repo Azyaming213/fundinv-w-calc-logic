@@ -13,6 +13,14 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    rules: {
+      // Dashboard effects intentionally initiate async API synchronization.
+      // The React 19 rule reports the loading-state update inside those
+      // functions even though the effect itself does not derive local state.
+      "react-hooks/set-state-in-effect": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

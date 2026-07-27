@@ -40,7 +40,7 @@ export default function AdminInvestorsPage() {
       setTimeout(() => setToast(null), 3000);
       await fetchData();
     } catch (err) {
-      setToast('Assignment failed: ' + ((err as any)?.message || 'Error'));
+      setToast('Assignment failed: ' + ((err as { message?: string })?.message || 'Error'));
       setTimeout(() => setToast(null), 4000);
     } finally {
       setAssigningId(null);

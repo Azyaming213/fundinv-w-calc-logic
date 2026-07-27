@@ -30,6 +30,12 @@ const tabs = [
     ),
   },
   {
+    label: 'Performance',
+    href: '/dashboard/manager/performance',
+    claim: CLAIMS.readAssignedInvestors,
+    icon: <span className="text-xs">P&amp;L</span>,
+  },
+  {
     label: 'Transactions',
     href: '/dashboard/manager/transactions',
     claim: CLAIMS.readTransactions,

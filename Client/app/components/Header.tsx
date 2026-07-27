@@ -86,6 +86,13 @@ export default function Header() {
                                         <p className="text-sm font-medium text-fundinv-primary">{user.full_name}</p>
                                         <p className="text-xs text-fundinv-muted truncate">{user.email}</p>
                                     </div>
+                                    <Link
+                                        href="/dashboard/security"
+                                        onClick={() => setMenuOpen(false)}
+                                        className="block w-full px-4 py-2 text-left text-sm text-fundinv-primary hover:bg-fundinv-surface transition"
+                                    >
+                                        Account security
+                                    </Link>
                                     <button
                                         onClick={handleLogout}
                                         className="w-full px-4 py-2 text-left text-sm text-fundinv-danger hover:bg-fundinv-surface transition"

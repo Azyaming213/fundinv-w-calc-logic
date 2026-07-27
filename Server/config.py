@@ -7,10 +7,17 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_MINUTES: int = 60
+    AUTH_COOKIE_NAME: str = "fundinv_session"
+    COOKIE_SECURE: str = "false"
+    COOKIE_SAMESITE: str = "lax"
     ENVIRONMENT: str = "development"
 
     FRONTEND_URL: str = "http://localhost:3000"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     AUTO_MIGRATE: str = "false"
+    ENABLE_SCHEDULER: str = "false"
+    ENABLE_AUTOMATED_TRADING: str = "false"
+    SCHEDULER_TIMEZONE: str = "Asia/Singapore"
 
     SMTP_EMAIL: str = ""
     SMTP_PASSWORD: str = ""

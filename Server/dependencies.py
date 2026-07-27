@@ -1,29 +1,33 @@
 from typing import Optional
+from datetime import datetime, timezone
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import User
+from models import AuthSession, User
 from models.role_claim import RoleClaim
 from services.auth_service import decode_access_token
+from config import settings
 
 
 security = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
 ) -> User:
-    if credentials is None:
+    token = credentials.credentials if credentials else request.cookies.get(settings.AUTH_COOKIE_NAME)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    payload = decode_access_token(credentials.credentials)
+    payload = decode_access_token(token)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -32,13 +36,26 @@ def get_current_user(
         )
 
     user_uuid = payload.get("sub")
-    if not user_uuid:
+    token_id = payload.get("jti")
+    if not user_uuid or not token_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token payload",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = db.query(User).filter(User.user_id == user_uuid).first()
+    session = db.query(AuthSession).filter(
+        AuthSession.token_id == token_id,
+        AuthSession.revoked.is_(False),
+        AuthSession.expires_at > datetime.now(timezone.utc),
+    ).first()
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session is invalid, expired, or revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = db.query(User).filter(User.user_id == user_uuid, User.id == session.user_id).first()
 
     if user is None:
         raise HTTPException(

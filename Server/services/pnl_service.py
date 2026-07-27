@@ -18,7 +18,7 @@ Realized PNL on trades (Section 5.4): FIFO cost-basis matching.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 import uuid
@@ -32,8 +32,11 @@ from models import (
     InvestmentAccount,
     Fund,
     FundFlow,
+    FundBalanceEntry,
+    FundPosition,
+    FundValuation,
 )
-from services.alpaca_service import get_positions, get_account
+from services.alpaca_service import get_positions
 
 
 TWO_PLACES = Decimal("0.01")
@@ -87,6 +90,7 @@ def compute_realized_pnl_fifo(
             InvestmentTransaction.investor_id == investor_id,
             InvestmentTransaction.symbol == symbol,
             InvestmentTransaction.entry == "out",
+            InvestmentTransaction.fund_id == fund_id,
         )
         .order_by(InvestmentTransaction.trade_time.asc())
         .all()
@@ -98,19 +102,21 @@ def compute_realized_pnl_fifo(
             InvestmentTransaction.investor_id == investor_id,
             InvestmentTransaction.symbol == symbol,
             InvestmentTransaction.entry == "in",
+            InvestmentTransaction.fund_id == fund_id,
         )
         .order_by(InvestmentTransaction.trade_time.asc())
         .all()
     )
 
+    # Reconstruct remaining lots by consuming historical sales once, in FIFO
+    # order. The former implementation subtracted every sale from every buy.
+    historical_sold = sum((Decimal(s.volume) for s in sells), Decimal("0"))
     open_buys: list[tuple[InvestmentTransaction, Decimal]] = []
     for buy in buys:
-        pos_key = buy.position_id or _position_key(investor_id, symbol, fund_id)
-        consumed = Decimal("0")
-        for sell in sells:
-            if sell.position_id and sell.position_id == pos_key:
-                consumed += Decimal(sell.volume)
-        remaining = Decimal(buy.volume) - consumed
+        buy_volume = Decimal(buy.volume)
+        consumed = min(buy_volume, historical_sold)
+        historical_sold -= consumed
+        remaining = buy_volume - consumed
         if remaining > 0:
             open_buys.append((buy, remaining))
 
@@ -304,70 +310,115 @@ def snapshot_daily_holdings(db: Session, as_of: Optional[datetime] = None) -> in
     Returns number of rows inserted.
     """
     as_of = as_of or _utcnow()
+    snapshot_date = as_of.date()
     day_start = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
     inserted = 0
 
     funds = db.query(Fund).filter(Fund.is_active.is_(True), Fund.review_status == "approved").all()
-
     for fund in funds:
-        nav_today = get_fund_nav(db, fund)
-        if nav_today <= 0:
+        positions = db.query(FundPosition).filter(FundPosition.fund_id == fund.id).all()
+        if not positions:
             continue
 
-        yesterday = (
-            db.query(PortfolioHolding)
-            .filter(
-                PortfolioHolding.fund_id == fund.id,
-                PortfolioHolding.holding_date < day_start,
-            )
-            .order_by(PortfolioHolding.holding_date.desc())
+        previous = (
+            db.query(FundValuation)
+            .filter(FundValuation.fund_id == fund.id, FundValuation.valuation_date < snapshot_date)
+            .order_by(FundValuation.valuation_date.desc())
             .first()
         )
-        nav_yesterday = Decimal(yesterday.fund_nav) if yesterday and yesterday.fund_nav else nav_today
-        fund_daily_pnl = nav_today - nav_yesterday
+        previous_nav = Decimal(previous.nav_per_unit) if previous else None
+        market_nav = Decimal(fund.current_price) if fund.current_price and Decimal(fund.current_price) > 0 else None
+        if market_nav is None:
+            market_nav = previous_nav or Decimal("1")
 
-        accounts = (
-            db.query(InvestmentAccount)
+        entries = (
+            db.query(FundBalanceEntry)
             .filter(
-                InvestmentAccount.deleted_at.is_(None),
-                InvestmentAccount.status == "active",
+                FundBalanceEntry.fund_id == fund.id,
+                FundBalanceEntry.created_at >= day_start,
+                FundBalanceEntry.created_at < day_end,
             )
             .all()
         )
+        net_flow = sum((Decimal(e.amount) for e in entries), Decimal("0"))
+        flow_units = sum((Decimal(e.units or 0) for e in entries), Decimal("0"))
+        closing_units = sum((Decimal(p.units) for p in positions), Decimal("0"))
+        opening_units = max(Decimal("0"), closing_units - flow_units)
+        opening_nav = previous_nav or market_nav
+        opening_assets = opening_units * opening_nav
+        daily_pnl = opening_units * (market_nav - opening_nav)
+        closing_before_flows = opening_assets + daily_pnl
+        closing_assets = closing_before_flows + net_flow
 
-        for account in accounts:
-            dollar_share = get_investor_fund_dollar_share(account, fund.id)
-            if dollar_share <= 0:
-                continue
-            share_pct = (dollar_share / nav_today * Decimal("100")) if nav_today > 0 else Decimal("0")
-            investor_daily_pnl = fund_daily_pnl * share_pct / Decimal("100")
+        valuation = (
+            db.query(FundValuation)
+            .filter(FundValuation.fund_id == fund.id, FundValuation.valuation_date == snapshot_date)
+            .first()
+        )
+        if valuation is None:
+            valuation = FundValuation(fund_id=fund.id, valuation_date=snapshot_date)
+            db.add(valuation)
+        valuation.opening_assets = opening_assets
+        valuation.daily_pnl = daily_pnl
+        valuation.closing_assets_before_flows = closing_before_flows
+        valuation.net_flow = net_flow
+        valuation.closing_assets = closing_assets
+        valuation.units_outstanding = closing_units
+        valuation.nav_per_unit = market_nav
 
-            existing = (
+        investor_ids = {p.investor_id for p in positions}
+        for investor_id in investor_ids:
+            investor_positions = [p for p in positions if p.investor_id == investor_id]
+            investor_closing_units = sum((Decimal(p.units) for p in investor_positions), Decimal("0"))
+            account_ids = {p.investment_account_id for p in investor_positions}
+            investor_entries = [e for e in entries if e.investment_account_id in account_ids]
+            investor_flow = sum((Decimal(e.amount) for e in investor_entries), Decimal("0"))
+            investor_flow_units = sum((Decimal(e.units or 0) for e in investor_entries), Decimal("0"))
+            investor_opening_units = max(Decimal("0"), investor_closing_units - investor_flow_units)
+            opening_value = investor_opening_units * opening_nav
+            investor_pnl = investor_opening_units * (market_nav - opening_nav)
+            closing_value_before_flows = opening_value + investor_pnl
+            closing_value = investor_closing_units * market_nav
+            opening_share_pct = (
+                investor_opening_units / opening_units * Decimal("100")
+                if opening_units > 0 else Decimal("0")
+            )
+            closing_share_pct = (
+                investor_closing_units / closing_units * Decimal("100")
+                if closing_units > 0 else Decimal("0")
+            )
+
+            holding = (
                 db.query(PortfolioHolding)
                 .filter(
-                    PortfolioHolding.investor_id == account.investor_id,
+                    PortfolioHolding.investor_id == investor_id,
                     PortfolioHolding.fund_id == fund.id,
-                    PortfolioHolding.holding_date >= day_start,
-                    PortfolioHolding.holding_date < day_start + timedelta(days=1),
+                    PortfolioHolding.snapshot_date == snapshot_date,
                 )
                 .first()
             )
-            if existing:
-                existing.account_value = dollar_share
-                existing.shareholding_pct = share_pct
-                existing.daily_pnl = investor_daily_pnl
-                existing.fund_nav = nav_today
-            else:
-                db.add(PortfolioHolding(
-                    investor_id=account.investor_id,
+            if holding is None:
+                holding = PortfolioHolding(
+                    investor_id=investor_id,
                     fund_id=fund.id,
                     holding_date=as_of,
-                    account_value=dollar_share,
-                    shareholding_pct=share_pct,
-                    daily_pnl=investor_daily_pnl,
-                    fund_nav=nav_today,
-                ))
+                    snapshot_date=snapshot_date,
+                    account_value=closing_value,
+                    shareholding_pct=closing_share_pct,
+                )
+                db.add(holding)
                 inserted += 1
+            holding.account_value = closing_value
+            holding.shareholding_pct = closing_share_pct
+            holding.daily_pnl = investor_pnl
+            holding.fund_nav = closing_assets
+            holding.units = investor_closing_units
+            holding.nav_per_unit = market_nav
+            holding.opening_value = opening_value
+            holding.opening_shareholding_pct = opening_share_pct
+            holding.closing_value_before_flows = closing_value_before_flows
+            holding.net_flow = investor_flow
 
     db.commit()
     return inserted
@@ -380,50 +431,23 @@ def process_fund_flows_for_day(db: Session, as_of: Optional[datetime] = None) ->
     withdrawals decrease it. This updates manager_fund_balance so the next
     snapshot reflects the new share.
     """
-    from sqlalchemy.orm.attributes import flag_modified
+    # Cash flows are applied transactionally when their payment/payout is
+    # confirmed. The old nightly replay double-counted every completed flow
+    # each time the job ran. Keep this compatibility hook as a read-only
+    # count for job reporting.
+    from models import FundBalanceEntry
 
     as_of = as_of or _utcnow()
     day_start = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
-
-    flows = (
-        db.query(FundFlow)
+    return (
+        db.query(FundBalanceEntry)
         .filter(
-            FundFlow.status.in_(["completed", "completed_provider_confirmed"]),
-            FundFlow.processed_at >= day_start,
-            FundFlow.processed_at < day_end,
-            FundFlow.fund_id.isnot(None),
+            FundBalanceEntry.created_at >= day_start,
+            FundBalanceEntry.created_at < day_end,
         )
-        .all()
+        .count()
     )
-
-    processed = 0
-    for flow in flows:
-        if not flow.fund_id or not flow.investment_account_id:
-            continue
-        account = (
-            db.query(InvestmentAccount)
-            .filter(InvestmentAccount.id == flow.investment_account_id)
-            .first()
-        )
-        if not account:
-            continue
-
-        mfb = dict(account.manager_fund_balance or {})
-        key = str(flow.fund_id)
-        current = Decimal(str(mfb.get(key, "0")))
-
-        if flow.flow_type == "deposit":
-            mfb[key] = float(current + Decimal(flow.amount))
-        elif flow.flow_type == "withdrawal":
-            mfb[key] = float(max(Decimal("0"), current - Decimal(flow.amount)))
-
-        account.manager_fund_balance = mfb
-        flag_modified(account, "manager_fund_balance")
-        processed += 1
-
-    db.commit()
-    return processed
 
 
 # ──────────────────────────────────────────────────────────
@@ -460,17 +484,22 @@ def compute_investor_pnl(
     fund_ids = {h.fund_id for h in holdings if h.fund_id}
     fund_returns: dict[int, Decimal] = {}
     for fid in fund_ids:
-        fund_holdings = [h for h in holdings if h.fund_id == fid]
-        if not fund_holdings:
-            continue
+        valuations = (
+            db.query(FundValuation)
+            .filter(
+                FundValuation.fund_id == fid,
+                FundValuation.valuation_date >= start_date.date(),
+                FundValuation.valuation_date <= end_date.date(),
+            )
+            .order_by(FundValuation.valuation_date.asc())
+            .all()
+        )
         compounded = Decimal("1")
-        prev_nav = Decimal(fund_holdings[0].fund_nav) if fund_holdings[0].fund_nav else None
-        for h in fund_holdings:
-            if h.fund_nav and prev_nav and prev_nav > 0:
-                daily_ret = Decimal(h.daily_pnl) / prev_nav
+        for valuation in valuations:
+            opening_assets = Decimal(valuation.opening_assets)
+            if opening_assets > 0:
+                daily_ret = Decimal(valuation.daily_pnl) / opening_assets
                 compounded *= (Decimal("1") + daily_ret)
-            if h.fund_nav:
-                prev_nav = Decimal(h.fund_nav)
         fund_returns[fid] = (compounded - Decimal("1")) * Decimal("100")
 
     realized_pnl = (
@@ -484,11 +513,27 @@ def compute_investor_pnl(
         .scalar()
     ) or Decimal("0")
 
-    start_value = Decimal(holdings[0].account_value) if holdings else Decimal("0")
-    end_value = Decimal(holdings[-1].account_value) if holdings else Decimal("0")
-    portfolio_return = (
-        ((end_value - start_value) / start_value * Decimal("100"))
-        if start_value > 0 else Decimal("0")
+    holdings_by_date: dict[date, list[PortfolioHolding]] = {}
+    for holding in holdings:
+        holding_day = holding.snapshot_date or holding.holding_date.date()
+        holdings_by_date.setdefault(holding_day, []).append(holding)
+
+    portfolio_growth = Decimal("1")
+    for day_holdings in holdings_by_date.values():
+        opening = sum((Decimal(h.opening_value or 0) for h in day_holdings), Decimal("0"))
+        pnl = sum((Decimal(h.daily_pnl or 0) for h in day_holdings), Decimal("0"))
+        if opening > 0:
+            portfolio_growth *= Decimal("1") + pnl / opening
+    portfolio_return = (portfolio_growth - Decimal("1")) * Decimal("100")
+
+    ordered_days = sorted(holdings_by_date)
+    start_value = (
+        sum((Decimal(h.opening_value or h.account_value) for h in holdings_by_date[ordered_days[0]]), Decimal("0"))
+        if ordered_days else Decimal("0")
+    )
+    end_value = (
+        sum((Decimal(h.account_value) for h in holdings_by_date[ordered_days[-1]]), Decimal("0"))
+        if ordered_days else Decimal("0")
     )
 
     return {
@@ -514,18 +559,18 @@ def compute_fund_return(
     end_date = end_date or _utcnow()
     start_date = start_date or (end_date - timedelta(days=365))
 
-    holdings = (
-        db.query(PortfolioHolding)
+    valuations = (
+        db.query(FundValuation)
         .filter(
-            PortfolioHolding.fund_id == fund_id,
-            PortfolioHolding.holding_date >= start_date,
-            PortfolioHolding.holding_date <= end_date,
+            FundValuation.fund_id == fund_id,
+            FundValuation.valuation_date >= start_date.date(),
+            FundValuation.valuation_date <= end_date.date(),
         )
-        .order_by(PortfolioHolding.holding_date.asc())
+        .order_by(FundValuation.valuation_date.asc())
         .all()
     )
 
-    if not holdings:
+    if not valuations:
         return {
             "fund_id": fund_id,
             "start_date": start_date.isoformat(),
@@ -537,22 +582,24 @@ def compute_fund_return(
 
     compounded = Decimal("1")
     daily_returns = []
-    prev_nav = Decimal(holdings[0].fund_nav) if holdings[0].fund_nav else None
     total_pnl = Decimal("0")
 
-    for h in holdings:
-        total_pnl += Decimal(h.daily_pnl)
-        if h.fund_nav and prev_nav and prev_nav > 0:
-            daily_ret = Decimal(h.daily_pnl) / prev_nav
+    for valuation in valuations:
+        pnl = Decimal(valuation.daily_pnl)
+        opening_assets = Decimal(valuation.opening_assets)
+        total_pnl += pnl
+        if opening_assets > 0:
+            daily_ret = pnl / opening_assets
             compounded *= (Decimal("1") + daily_ret)
             daily_returns.append({
-                "date": h.holding_date.isoformat(),
-                "daily_pnl": float(h.daily_pnl),
-                "fund_nav": float(h.fund_nav),
+                "date": valuation.valuation_date.isoformat(),
+                "daily_pnl": float(pnl),
+                "opening_assets": float(opening_assets),
+                "net_flow": float(valuation.net_flow),
+                "closing_assets": float(valuation.closing_assets),
+                "nav_per_unit": float(valuation.nav_per_unit),
                 "daily_return_pct": float(daily_ret * Decimal("100")),
             })
-        if h.fund_nav:
-            prev_nav = Decimal(h.fund_nav)
 
     return {
         "fund_id": fund_id,
@@ -569,30 +616,67 @@ def compute_fund_return(
 # ──────────────────────────────────────────────────────────
 
 def compute_unrealized_pnl(db: Session, investor_id: int) -> dict:
-    """Return current unrealized PNL broken down by symbol from Alpaca."""
+    """Return only this investor's locally attributable Alpaca positions.
+
+    Alpaca is configured as one omnibus paper account. Quantities and cost
+    basis therefore come from the investor's own transaction ledger; Alpaca
+    supplies current market prices only.
+    """
     positions = get_positions()
     if not isinstance(positions, list):
         return {"total_unrealized_pnl": 0.0, "positions": []}
 
+    market_by_symbol = {p.get("symbol"): p for p in positions if p.get("symbol")}
+    transactions = (
+        db.query(InvestmentTransaction)
+        .filter(InvestmentTransaction.investor_id == investor_id)
+        .order_by(InvestmentTransaction.trade_time.asc(), InvestmentTransaction.id.asc())
+        .all()
+    )
+    by_symbol: dict[str, list[InvestmentTransaction]] = {}
+    for transaction in transactions:
+        by_symbol.setdefault(transaction.symbol, []).append(transaction)
+
     total = Decimal("0")
     rows = []
-    for p in positions:
-        upl = Decimal(str(p.get("unrealized_pl", "0")))
+    for symbol, symbol_transactions in by_symbol.items():
+        lots: list[list[Decimal]] = []
+        for transaction in symbol_transactions:
+            quantity = Decimal(transaction.volume)
+            if transaction.entry == "in" or transaction.trade_type == "buy":
+                lots.append([quantity, Decimal(transaction.price)])
+                continue
+            remaining_sale = quantity
+            for lot in lots:
+                if remaining_sale <= 0:
+                    break
+                consumed = min(lot[0], remaining_sale)
+                lot[0] -= consumed
+                remaining_sale -= consumed
+
+        open_lots = [lot for lot in lots if lot[0] > 0]
+        local_qty = sum((lot[0] for lot in open_lots), Decimal("0"))
+        if local_qty <= 0 or symbol not in market_by_symbol:
+            continue
+        local_cost = sum((lot[0] * lot[1] for lot in open_lots), Decimal("0"))
+        avg_entry = local_cost / local_qty
+        current_price = Decimal(str(market_by_symbol[symbol].get("current_price", "0")))
+        market_value = local_qty * current_price
+        upl = market_value - local_cost
         total += upl
         rows.append({
-            "symbol": p.get("symbol"),
-            "qty": float(p.get("qty", 0)),
-            "avg_entry_price": float(p.get("avg_entry_price", 0)),
-            "current_price": float(p.get("current_price", 0)),
-            "market_value": float(p.get("market_value", 0)),
+            "symbol": symbol,
+            "qty": float(local_qty),
+            "avg_entry_price": float(avg_entry),
+            "current_price": float(current_price),
+            "market_value": float(market_value),
             "unrealized_pl": float(upl),
-            "unrealized_plpc": float(p.get("unrealized_plpc", 0)),
+            "unrealized_plpc": float(upl / local_cost) if local_cost > 0 else 0.0,
         })
 
-    account = get_account()
     return {
         "total_unrealized_pnl": float(total),
-        "portfolio_value": float(account.get("portfolio_value", 0)) if account else 0,
-        "cash": float(account.get("cash", 0)) if account else 0,
+        "portfolio_value": float(sum((Decimal(str(row["market_value"])) for row in rows), Decimal("0"))),
+        "cash": 0.0,
         "positions": rows,
     }

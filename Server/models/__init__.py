@@ -17,3 +17,7 @@ from .feedback import FeedbackTicket
 from .balance_entry import FundBalanceEntry
 from .invite_request import InviteRequest
 from .fund_component import FundComponent
+from .fund_position import FundPosition
+from .fund_valuation import FundValuation
+from .auth_session import AuthSession
+from .login_attempt import LoginAttempt

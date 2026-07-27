@@ -1,11 +1,12 @@
 import secrets
+import hashlib
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import User, Role, Invite, PasswordResetToken, Investor, Manager, InviteRequest
+from models import AuthSession, LoginAttempt, User, Role, Invite, PasswordResetToken, Investor, Manager, InviteRequest
 from schemas.auth_schema import (
     LoginRequest,
     RegisterRequest,
@@ -16,15 +17,86 @@ from schemas.auth_schema import (
     MfaVerifyRequest,
     MfaLoginRequest,
 )
-from services.auth_service import hash_password, verify_password, create_access_token, create_mfa_token, decode_mfa_token
+from services.auth_service import hash_password, verify_password, create_access_token, create_mfa_token, decode_access_token, decode_mfa_token
 from services.audit_service import log_event, AUDIT_ACTIONS
-from services.email_service import send_invite_email
+from services.email_service import send_invite_email, send_password_reset_email
 from services.mfa_service import generate_mfa_secret, generate_otpauth_uri, generate_qr_code_base64, verify_totp
 from dependencies import get_current_user, require_claim, require_any_claim, get_client_info
 import appconstants as AppConstants
+from config import settings
 
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
+
+LOGIN_WINDOW_SECONDS = 15 * 60
+LOGIN_MAX_FAILURES = 5
+def _login_key(email: str, request: Request) -> str:
+    address = request.client.host if request.client else "unknown"
+    raw = f"{email.strip().lower()}:{address}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _check_login_throttle(db: Session, key: str) -> None:
+    now = datetime.now(timezone.utc)
+    attempt = db.query(LoginAttempt).filter(LoginAttempt.throttle_key == key).first()
+    if attempt and attempt.blocked_until and attempt.blocked_until > now:
+        retry_after = max(1, int((attempt.blocked_until - now).total_seconds()))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _record_login_failure(db: Session, key: str) -> None:
+    now = datetime.now(timezone.utc)
+    attempt = db.query(LoginAttempt).filter(LoginAttempt.throttle_key == key).with_for_update().first()
+    if attempt is None:
+        attempt = LoginAttempt(throttle_key=key, failure_count=0, window_started_at=now)
+        db.add(attempt)
+        db.flush()
+    if (now - attempt.window_started_at).total_seconds() >= LOGIN_WINDOW_SECONDS:
+        attempt.failure_count = 0
+        attempt.window_started_at = now
+        attempt.blocked_until = None
+    attempt.failure_count += 1
+    if attempt.failure_count >= LOGIN_MAX_FAILURES:
+        attempt.blocked_until = now + timedelta(seconds=LOGIN_WINDOW_SECONDS)
+
+
+def _clear_login_failures(db: Session, key: str) -> None:
+    db.query(LoginAttempt).filter(LoginAttempt.throttle_key == key).delete(synchronize_session=False)
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=settings.AUTH_COOKIE_NAME,
+        value=token,
+        max_age=settings.JWT_EXPIRY_MINUTES * 60,
+        httponly=True,
+        secure=settings.COOKIE_SECURE.lower() == "true",
+        samesite=settings.COOKIE_SAMESITE,
+        path="/",
+    )
+
+
+def _issue_session(db: Session, user: User, req: Request, response: Response) -> str:
+    token = create_access_token(
+        user_id=str(user.user_id), role=user.role.name, email=user.email,
+        full_name=user.full_name, claims=AppConstants.ROLE_CLAIMS.get(user.role.name, []),
+    )
+    payload = decode_access_token(token)
+    client_info = get_client_info(req)
+    db.add(AuthSession(
+        user_id=user.id,
+        token_id=payload["jti"],
+        expires_at=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+        ip_address=client_info.get("ip_address"),
+        user_agent=client_info.get("user_agent"),
+    ))
+    db.flush()
+    _set_session_cookie(response, token)
+    return token
 
 
 @router.post("/register", response_model=StandardResponse)
@@ -118,11 +190,14 @@ def register(request: RegisterRequest, req: Request, db: Session = Depends(get_d
 
 
 @router.post("/login", response_model=StandardResponse)
-def login(request: LoginRequest, req: Request, db: Session = Depends(get_db)):
+def login(request: LoginRequest, req: Request, response: Response, db: Session = Depends(get_db)):
+    throttle_key = _login_key(request.email, req)
+    _check_login_throttle(db, throttle_key)
     user = db.query(User).filter(User.email == request.email).first()
     client_info = get_client_info(req)
 
     if user is None or not verify_password(request.password, user.hashed_password):
+        _record_login_failure(db, throttle_key)
         log_event(
             db=db,
             action=AUDIT_ACTIONS["AUTH_LOGIN_FAILED"],
@@ -152,6 +227,8 @@ def login(request: LoginRequest, req: Request, db: Session = Depends(get_db)):
             detail="Account is inactive",
         )
 
+    _clear_login_failures(db, throttle_key)
+
     if user.mfa_enabled:
         mfa_token = create_mfa_token(user_id=str(user.user_id), email=user.email)
 
@@ -179,13 +256,7 @@ def login(request: LoginRequest, req: Request, db: Session = Depends(get_db)):
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
-    token = create_access_token(
-        user_id=str(user.user_id),
-        role=user.role.name,
-        email=user.email,
-        full_name=user.full_name,
-        claims=AppConstants.ROLE_CLAIMS.get(user.role.name, []),
-    )
+    _issue_session(db, user, req, response)
 
     log_event(
         db=db,
@@ -200,14 +271,13 @@ def login(request: LoginRequest, req: Request, db: Session = Depends(get_db)):
     return StandardResponse(
         success=True,
         data={
-            "access_token": token,
-            "token_type": "bearer",
             "user": {
                 "user_id": str(user.user_id),
                 "email": user.email,
                 "full_name": user.full_name,
                 "role": user.role.name,
                 "is_active": user.is_active,
+                "claims": AppConstants.ROLE_CLAIMS.get(user.role.name, []),
             },
         },
         error=None,
@@ -215,7 +285,17 @@ def login(request: LoginRequest, req: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/logout", response_model=StandardResponse)
-def logout(req: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def logout(req: Request, response: Response, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    token = req.cookies.get(settings.AUTH_COOKIE_NAME)
+    if not token and req.headers.get("authorization", "").lower().startswith("bearer "):
+        token = req.headers["authorization"].split(" ", 1)[1]
+    payload = decode_access_token(token) if token else None
+    if payload and payload.get("jti"):
+        session = db.query(AuthSession).filter(AuthSession.token_id == payload["jti"]).with_for_update().first()
+        if session:
+            session.revoked = True
+            session.revoked_at = datetime.now(timezone.utc)
+    response.delete_cookie(settings.AUTH_COOKIE_NAME, path="/")
     client_info = get_client_info(req)
     log_event(
         db=db,
@@ -240,6 +320,7 @@ def get_me(current_user: User = Depends(get_current_user)):
             "role": current_user.role.name,
             "is_active": current_user.is_active,
             "mfa_enabled": current_user.mfa_enabled,
+            "claims": AppConstants.ROLE_CLAIMS.get(current_user.role.name, []),
             "last_login_at": (
                 current_user.last_login_at.isoformat()
                 if current_user.last_login_at
@@ -259,7 +340,7 @@ def forgot_password(request: ForgotPasswordRequest, req: Request, db: Session = 
         token = secrets.token_urlsafe(32)
         reset = PasswordResetToken(
             user_id=user.id,
-            token=token,
+            token=hashlib.sha256(token.encode("utf-8")).hexdigest(),
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         db.add(reset)
@@ -275,7 +356,7 @@ def forgot_password(request: ForgotPasswordRequest, req: Request, db: Session = 
             **client_info,
         )
 
-        print(f"\n[DEV] Password reset token for {request.email}: {token}\n")
+        send_password_reset_email(user.email, user.full_name, token)
 
     return StandardResponse(
         success=True,
@@ -286,9 +367,10 @@ def forgot_password(request: ForgotPasswordRequest, req: Request, db: Session = 
 
 @router.post("/reset-password", response_model=StandardResponse)
 def reset_password(request: ResetPasswordRequest, req: Request, db: Session = Depends(get_db)):
+    token_hash = hashlib.sha256(request.token.encode("utf-8")).hexdigest()
     reset = (
         db.query(PasswordResetToken)
-        .filter(PasswordResetToken.token == request.token)
+        .filter(PasswordResetToken.token == token_hash)
         .first()
     )
 
@@ -623,6 +705,7 @@ def mfa_verify(
 def mfa_login(
     request: MfaLoginRequest,
     req: Request,
+    response: Response,
     db: Session = Depends(get_db),
 ):
     mfa_payload = decode_mfa_token(request.mfa_token)
@@ -666,13 +749,7 @@ def mfa_login(
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
-    token = create_access_token(
-        user_id=str(user.user_id),
-        role=user.role.name,
-        email=user.email,
-        full_name=user.full_name,
-        claims=AppConstants.ROLE_CLAIMS.get(user.role.name, []),
-    )
+    _issue_session(db, user, req, response)
 
     client_info = get_client_info(req)
     log_event(
@@ -689,14 +766,13 @@ def mfa_login(
     return StandardResponse(
         success=True,
         data={
-            "access_token": token,
-            "token_type": "bearer",
             "user": {
                 "user_id": str(user.user_id),
                 "email": user.email,
                 "full_name": user.full_name,
                 "role": user.role.name,
                 "is_active": user.is_active,
+                "claims": AppConstants.ROLE_CLAIMS.get(user.role.name, []),
             },
         },
         error=None,

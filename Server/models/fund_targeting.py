@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.sql import func
 
 from database import Base
@@ -15,4 +15,5 @@ class FundTargeting(Base):
     investor_id = Column(Integer, ForeignKey("fundinv.investors.id", ondelete="CASCADE"), nullable=False)
     fund_id = Column(Integer, ForeignKey("fundinv.funds.id", ondelete="CASCADE"), nullable=False)
     is_visible = Column(Boolean, default=True)
+    risk_tolerance = Column(String(20), nullable=False, default="balanced")
     created_at = Column(DateTime(timezone=True), server_default=func.now())

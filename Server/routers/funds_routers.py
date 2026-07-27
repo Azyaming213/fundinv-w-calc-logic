@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from database import get_db
-from models import Fund, FundInvestment, Investor, InvestmentAccount, FundFlow, FundTargeting, Manager
+from models import Fund, FundInvestment, Investor, InvestmentAccount, FundFlow, FundPosition, FundTargeting, Manager
 from schemas.fund_schema import FundResponse, FundListResponse, InvestRequest, InvestResponse
 from dependencies import get_current_user, require_claim
 from services.alpaca_service import (
@@ -21,6 +21,7 @@ from services.alpaca_service import (
     STRATEGY_META,
 )
 from services.audit_service import log_event, AUDIT_ACTIONS
+from services.fund_accounting_service import current_nav_per_unit
 import appconstants as AppConstants
 
 router = APIRouter(prefix="/api/funds", tags=["Funds"])
@@ -41,6 +42,7 @@ def list_funds(
     current_user=Depends(get_current_user),
 ):
     query = db.query(Fund).filter(Fund.is_active == True, Fund.review_status == "approved")
+    investor = None
 
     if current_user.role and current_user.role.name == "investor":
         investor = db.query(Investor).filter(Investor.email == current_user.email).first()
@@ -89,6 +91,12 @@ def list_funds(
         except Exception:
             pass
 
+    risk_by_fund = {}
+    if investor:
+        risk_by_fund = {
+            row.fund_id: row.risk_tolerance
+            for row in db.query(FundTargeting).filter(FundTargeting.investor_id == investor.id).all()
+        }
     fund_list = []
     for f in funds:
         fd = FundResponse.model_validate(f).model_dump()
@@ -97,6 +105,7 @@ def list_funds(
         if f.ticker and f.ticker in live_prices:
             fd["current_price"] = live_prices[f.ticker]["price"]
             fd["change_pct"] = live_prices[f.ticker]["change_pct"]
+        fd["investor_risk_tolerance"] = risk_by_fund.get(f.id, "balanced")
         fund_list.append(fd)
 
     return FundListResponse(
@@ -451,6 +460,41 @@ class UpdateFundRequest(BaseModel):
     risk_level: str | None = None
 
 
+class RiskToleranceRequest(BaseModel):
+    risk_tolerance: str
+
+
+@router.put("/{fund_id}/risk-tolerance")
+def update_risk_tolerance(
+    fund_id: int,
+    request: RiskToleranceRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_claim(AppConstants.CLAIMS["readFunds"])),
+):
+    allowed = {"conservative", "balanced", "growth", "aggressive"}
+    if request.risk_tolerance not in allowed:
+        raise HTTPException(status_code=400, detail=f"Risk tolerance must be one of: {', '.join(sorted(allowed))}")
+    investor = db.query(Investor).filter(Investor.email == current_user.email).first()
+    if not investor:
+        raise HTTPException(status_code=404, detail="Investor profile not found")
+    targeting = db.query(FundTargeting).filter(
+        FundTargeting.investor_id == investor.id,
+        FundTargeting.fund_id == fund_id,
+        FundTargeting.is_visible.is_(True),
+    ).with_for_update().first()
+    if not targeting:
+        raise HTTPException(status_code=404, detail="Fund is not available to this investor")
+    targeting.risk_tolerance = request.risk_tolerance
+    log_event(
+        db=db, user_id=current_user.id, action="fund.risk_tolerance.updated",
+        details=f"Risk tolerance set to {request.risk_tolerance}", entity_type="fund_targeting",
+        entity_id=targeting.id, changes={"fund_id": fund_id, "risk_tolerance": request.risk_tolerance},
+        status="success", commit=False,
+    )
+    db.commit()
+    return {"success": True, "data": {"fund_id": fund_id, "risk_tolerance": targeting.risk_tolerance}, "error": None}
+
+
 @router.put("/{fund_id}")
 def update_fund(
     fund_id: int,
@@ -587,6 +631,7 @@ def invest_fund(
         investment_account_id=account.id,
         flow_type="investment",
         amount=request.amount,
+        currency=account.currency,
         status=flow_status,
         request_id=f"fund_invest_{fund.id}_{investor.id}_{int(request.amount)}_{uuid.uuid4().hex[:8]}",
     )
@@ -674,6 +719,7 @@ def request_fund_deposit(
         fund_id=fund.id,
         flow_type="deposit",
         amount=amount,
+        currency=account.currency,
         status="pending_ops_team",
         request_id=request_id,
         notes=note,
@@ -750,8 +796,14 @@ def request_fund_withdrawal(
     if not targeting:
         raise HTTPException(status_code=404, detail="Fund is not available to this investor")
 
-    mfb = dict(account.manager_fund_balance or {})
-    available = float(mfb.get(str(fund_id), 0))
+    position = db.query(FundPosition).filter(
+        FundPosition.investment_account_id == account.id,
+        FundPosition.fund_id == fund_id,
+    ).with_for_update().first()
+    available = (
+        float(position.units) * float(current_nav_per_unit(db, fund))
+        if position else 0.0
+    )
     outstanding = db.query(FundFlow).filter(
         FundFlow.investment_account_id == account.id,
         FundFlow.fund_id == fund_id,
@@ -775,6 +827,7 @@ def request_fund_withdrawal(
         fund_id=fund.id,
         flow_type="withdrawal",
         amount=amount,
+        currency=account.currency,
         status="pending_ops_team",
         request_id=request_id,
         notes=note,

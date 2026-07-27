@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Card from '../../../components/Card';
 import Input from '../../../components/Input';
 import Button from '../../../components/Button';
-import { api } from '../../../lib/api';
-import { getToken } from '../../../lib/auth';
+import { api, API_BASE } from '../../../lib/api';
 import type { ManagerOrder } from '../../../lib/types';
 
 export default function ManagerTransactionsPage() {
@@ -18,7 +17,7 @@ export default function ManagerTransactionsPage() {
   const [exporting, setExporting] = useState(false);
   const pageSize = 20;
 
-  const fetchOrders = async () => {
+  const fetchOrders = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
@@ -34,18 +33,17 @@ export default function ManagerTransactionsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [page, search, side]);
 
   useEffect(() => {
     fetchOrders();
-  }, [page, side, search]);
+  }, [fetchOrders]);
 
   const handleExport = async () => {
     setExporting(true);
     try {
-      const token = getToken();
-      const resp = await fetch('http://localhost:8000/api/manager/transactions/export', {
-        headers: { Authorization: `Bearer ${token}` },
+      const resp = await fetch(`${API_BASE}/api/manager/transactions/export`, {
+        credentials: 'include',
       });
       if (!resp.ok) throw new Error('Export failed');
       const blob = await resp.blob();

@@ -22,14 +22,17 @@ export interface PaginatedResponse<T> {
 // ── Auth / User ──────────────────────────────
 
 export interface LoginResponse {
-  access_token: string;
-  token_type: string;
-  user: {
+  access_token?: string;
+  token_type?: string;
+  mfa_required?: boolean;
+  mfa_token?: string;
+  user?: {
     user_id: string;
     email: string;
     full_name: string;
     role: string;
     is_active: boolean;
+    claims: string[];
   };
 }
 
@@ -120,6 +123,7 @@ export interface Fund {
   is_featured: boolean;
   manager_name?: string | null;
   review_status?: string;
+  investor_risk_tolerance?: 'conservative' | 'balanced' | 'growth' | 'aggressive';
 }
 
 export interface ManagerFund {
@@ -134,7 +138,7 @@ export interface ManagerFund {
   is_active: boolean;
   creator_manager_id: number | null;
   manager_name: string | null;
-  portfolio_composition: unknown[];
+  portfolio_composition: Holding[];
 }
 
 export interface Holding {
@@ -151,6 +155,7 @@ export interface FundInvestmentItem {
   fund_name: string;
   fund_type: string;
   amount: number;
+  currency?: string;
   status: string;
   invested_at: string | null;
 }
@@ -198,12 +203,37 @@ export interface PortfolioSummary {
   total_fund_balance: number;
   total_account_value: number;
   fund_breakdown: FundBreakdown[];
+  fund_positions: FundPosition[];
   accounts: Account[];
+  today_pnl: number;
+  pnl: {
+    total_pnl: number;
+    realized_pnl: number;
+    unrealized_pnl: number;
+    portfolio_return_pct: number;
+    start_date: string;
+    end_date: string;
+  };
 }
+
+export type PnlReport = PortfolioSummary['pnl'];
 
 export interface FundBreakdown {
   fund: string;
+  fund_id?: number;
   amount: number;
+  units?: number;
+  nav_per_unit?: number;
+}
+
+export interface FundPosition {
+  investment_account_id: number;
+  fund_id: number;
+  fund: string;
+  units: number;
+  nav_per_unit: number;
+  market_value: number;
+  cost_basis: number;
 }
 
 export interface Position {
@@ -301,6 +331,9 @@ export interface FundFlowEntry {
   processed_by_email: string | null;
   processed_by_name: string | null;
   notes: string | null;
+  status_message?: string;
+  next_action?: string;
+  payment_url?: string | null;
 }
 
 export interface PaymentRecord {

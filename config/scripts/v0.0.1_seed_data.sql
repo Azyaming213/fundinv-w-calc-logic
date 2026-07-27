@@ -27,6 +27,7 @@ INSERT INTO fundinv_auth.role_claims (role_id, claim_key) VALUES
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'readOwnFundFlows'),
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'createFeedback'),
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'readOwnFeedback'),
+    ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'executeTrades'),
     -- manager claims
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'manager'), 'readDashboard'),
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'manager'), 'readFunds'),
@@ -618,8 +619,36 @@ INSERT INTO fundinv.portfolio_holdings (
 )
 ON CONFLICT DO NOTHING;
 
+UPDATE fundinv.portfolio_holdings
+SET snapshot_date = holding_date::date
+WHERE snapshot_date IS NULL;
+
+-- Create normalized opening positions from each investor/fund's latest
+-- historical snapshot. New deposits and withdrawals update these positions.
+WITH latest AS (
+    SELECT DISTINCT ON (h.investor_id, h.fund_id)
+        h.investor_id, h.fund_id, h.account_value,
+        COALESCE(NULLIF(f.current_price, 0), 1)::numeric AS nav_per_unit
+    FROM fundinv.portfolio_holdings h
+    JOIN fundinv.funds f ON f.id = h.fund_id
+    WHERE h.fund_id IS NOT NULL AND h.account_value > 0
+    ORDER BY h.investor_id, h.fund_id, h.snapshot_date DESC, h.holding_date DESC
+), account_for_investor AS (
+    SELECT DISTINCT ON (a.investor_id) a.id, a.investor_id
+    FROM fundinv.investment_accounts a
+    WHERE a.deleted_at IS NULL AND a.status = 'active'
+    ORDER BY a.investor_id, a.created_at, a.id
+)
+INSERT INTO fundinv.fund_positions
+    (investment_account_id, investor_id, fund_id, units, cost_basis)
+SELECT a.id, l.investor_id, l.fund_id,
+       ROUND(l.account_value / l.nav_per_unit, 10), ROUND(l.account_value, 4)
+FROM latest l
+JOIN account_for_investor a ON a.investor_id = l.investor_id
+ON CONFLICT (investment_account_id, fund_id) DO NOTHING;
+
 -- ============================================================
 -- 19. Track schema version
 -- ============================================================
-INSERT INTO fundinv.alembic_version (version_num) VALUES ('add_permissions_tables')
-ON CONFLICT (version_num) DO UPDATE SET version_num = 'add_permissions_tables';
+DELETE FROM fundinv.alembic_version;
+INSERT INTO fundinv.alembic_version (version_num) VALUES ('v0.4.4_security_reporting');

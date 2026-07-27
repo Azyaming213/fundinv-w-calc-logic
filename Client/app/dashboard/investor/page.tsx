@@ -1,22 +1,21 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import Card from '../../components/Card';
 import Button from '../../components/Button';
 import Input from '../../components/Input';
-import { api } from '../../lib/api';
-import { getUser, getToken } from '../../lib/auth';
+import { api, API_BASE } from '../../lib/api';
+import { getUser } from '../../lib/auth';
 import type {
-  FundBreakdown,
   Transaction,
-  Account,
   Position,
   SellResult,
   PortfolioSummary,
   FundInvestmentItem,
   Fund,
+  PnlReport,
 } from '../../lib/types';
 
 const CHART_COLORS = [
@@ -42,11 +41,16 @@ export default function InvestorDashboard() {
     const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
     const [emailError, setEmailError] = useState<string | null>(null);
     const [exportingPdf, setExportingPdf] = useState(false);
+    const [monthlyPnl, setMonthlyPnl] = useState<PnlReport | null>(null);
+    const [periodPnl, setPeriodPnl] = useState<PnlReport | null>(null);
+    const [periodStart, setPeriodStart] = useState(() => `${new Date().getFullYear()}-01-01`);
+    const [periodEnd, setPeriodEnd] = useState(() => new Date().toISOString().slice(0, 10));
+    const [periodLoading, setPeriodLoading] = useState(false);
+    const [periodError, setPeriodError] = useState<string | null>(null);
 
     const [positions, setPositions] = useState<Position[]>([]);
     const [fundInvestments, setFundInvestments] = useState<FundInvestmentItem[]>([]);
     const [positionsError, setPositionsError] = useState<string | null>(null);
-    const [positionAccountId, setPositionAccountId] = useState<number | null>(null);
     const [sellPosition, setSellPosition] = useState<Position | null>(null);
     const [sellAmount, setSellAmount] = useState('');
     const [selling, setSelling] = useState(false);
@@ -90,12 +94,16 @@ export default function InvestorDashboard() {
         setLoading(true);
         setError(null);
         try {
-            const [summaryRes, txnRes] = await Promise.all([
+            const monthStart = new Date();
+            monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
+            const [summaryRes, txnRes, monthlyRes] = await Promise.all([
                 api.get<PortfolioSummary>('/api/portfolio/summary'),
                 api.get<{ transactions: Transaction[] }>('/api/portfolio/recent-transactions'),
+                api.get<{ pnl: PnlReport }>(`/api/portfolio/pnl?start_date=${encodeURIComponent(monthStart.toISOString())}&end_date=${encodeURIComponent(new Date().toISOString())}`),
             ]);
             setSummary(summaryRes);
             setTransactions(txnRes.transactions || []);
+            setMonthlyPnl(monthlyRes.pnl);
             const fundsRes = await api.get<{ funds: Fund[] }>('/api/funds');
             setFunds(fundsRes.funds || []);
         } catch (err) {
@@ -104,6 +112,21 @@ export default function InvestorDashboard() {
         } finally {
             setLoading(false);
         }
+    };
+
+    const fetchPeriodPnl = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!periodStart || !periodEnd || periodStart > periodEnd) {
+            setPeriodError('Choose a valid start and end date.');
+            return;
+        }
+        setPeriodLoading(true); setPeriodError(null);
+        try {
+            const data = await api.get<{ pnl: PnlReport }>(`/api/portfolio/pnl?start_date=${encodeURIComponent(`${periodStart}T00:00:00Z`)}&end_date=${encodeURIComponent(`${periodEnd}T23:59:59Z`)}`);
+            setPeriodPnl(data.pnl);
+        } catch (err) {
+            setPeriodError((err as { message?: string }).message || 'Unable to calculate period performance');
+        } finally { setPeriodLoading(false); }
     };
 
     const fetchPositions = async () => {
@@ -137,13 +160,15 @@ export default function InvestorDashboard() {
     const chartData = (summary?.fund_breakdown ?? []).map((f) => ({
         name: f.fund,
         value: f.amount,
+        units: f.units ?? 0,
+        navPerUnit: f.nav_per_unit ?? 0,
     }));
 
     const handlePieSegmentClick = (fund: string) => {
         router.push(`/dashboard/investor/stock/${encodeURIComponent(fund)}`);
     };
 
-    const accounts = summary?.accounts ?? [];
+    const accounts = useMemo(() => summary?.accounts ?? [], [summary?.accounts]);
     const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? accounts[0] ?? null;
 
     useEffect(() => {
@@ -246,9 +271,8 @@ export default function InvestorDashboard() {
     const handleExportPdf = async () => {
         setExportingPdf(true);
         try {
-            const token = getToken();
-            const resp = await fetch('http://localhost:8000/api/portfolio/export-pdf', {
-                headers: { Authorization: `Bearer ${token}` },
+            const resp = await fetch(`${API_BASE}/api/portfolio/export-pdf`, {
+                credentials: 'include',
             });
             if (!resp.ok) throw new Error('Export failed');
             const blob = await resp.blob();
@@ -367,7 +391,7 @@ export default function InvestorDashboard() {
                     <Button variant="primary" onClick={() => { setTopUpAccountId(selectedAccountId); setTopUpFundId(null); setTopUpAmount(''); setTopUpError(null); setTopUpResult(null); setShowTopUpModal(true); }}>
                         <span className="flex items-center gap-2">
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
-                            Top Up
+                            Deposit to Fund
                         </span>
                     </Button>
                     <Button variant="secondary" onClick={() => { setWithdrawAccountId(selectedAccountId); setWithdrawFundId(null); setWithdrawAmount(''); setWithdrawError(null); setWithdrawResult(null); setShowWithdrawModal(true); }}>
@@ -467,7 +491,7 @@ export default function InvestorDashboard() {
                 </Card>
             ) : (
                 <>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                         <Card title="Account Value">
                             <p className="text-2xl font-semibold text-fundinv-primary">
                                 {fmt(summary?.total_account_value ?? 0)}
@@ -485,15 +509,42 @@ export default function InvestorDashboard() {
                         </Card>
 
                         <Card title="Today's P&L">
-                            <p className="text-2xl font-semibold text-fundinv-muted">— —</p>
-                            <p className="text-xs text-fundinv-muted mt-1">Coming soon</p>
+                            <p className={`text-2xl font-semibold ${pnlColor(summary?.today_pnl ?? 0)}`}>
+                                {fmt(summary?.today_pnl ?? 0)}
+                            </p>
+                            <p className="text-xs text-fundinv-muted mt-1">Allocated using opening fund units</p>
                         </Card>
 
                         <Card title="YTD Return">
-                            <p className="text-2xl font-semibold text-fundinv-muted">— —</p>
-                            <p className="text-xs text-fundinv-muted mt-1">Coming soon</p>
+                            <p className={`text-2xl font-semibold ${pnlColor(summary?.pnl?.portfolio_return_pct ?? 0)}`}>
+                                {(summary?.pnl?.portfolio_return_pct ?? 0).toFixed(2)}%
+                            </p>
+                            <p className="text-xs text-fundinv-muted mt-1">Flow-adjusted, compounded daily</p>
+                        </Card>
+                        <Card title="Monthly Return">
+                            <p className={`text-2xl font-semibold ${pnlColor(monthlyPnl?.portfolio_return_pct ?? 0)}`}>
+                                {(monthlyPnl?.portfolio_return_pct ?? 0).toFixed(2)}%
+                            </p>
+                            <p className={`text-xs mt-1 ${pnlColor(monthlyPnl?.total_pnl ?? 0)}`}>{fmt(monthlyPnl?.total_pnl ?? 0)} P&amp;L</p>
                         </Card>
                     </div>
+
+                    <Card title="Performance period" className="mb-6">
+                        <form onSubmit={fetchPeriodPnl} className="flex flex-wrap items-end gap-3">
+                            <Input label="Start date" type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} />
+                            <Input label="End date" type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+                            <Button type="submit" disabled={periodLoading}>{periodLoading ? 'Calculating…' : 'Calculate'}</Button>
+                        </form>
+                        {periodError && <p className="mt-3 text-sm text-fundinv-danger">{periodError}</p>}
+                        {periodPnl && (
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 pt-5 border-t border-fundinv-border">
+                                <div><p className="text-xs text-fundinv-muted">Total dollar P&amp;L</p><p className={`font-semibold ${pnlColor(periodPnl.total_pnl)}`}>{fmt(periodPnl.total_pnl)}</p></div>
+                                <div><p className="text-xs text-fundinv-muted">Compounded return</p><p className={`font-semibold ${pnlColor(periodPnl.portfolio_return_pct)}`}>{periodPnl.portfolio_return_pct.toFixed(2)}%</p></div>
+                                <div><p className="text-xs text-fundinv-muted">Realized P&amp;L</p><p className={pnlColor(periodPnl.realized_pnl)}>{fmt(periodPnl.realized_pnl)}</p></div>
+                                <div><p className="text-xs text-fundinv-muted">Unrealized P&amp;L</p><p className={pnlColor(periodPnl.unrealized_pnl)}>{fmt(periodPnl.unrealized_pnl)}</p></div>
+                            </div>
+                        )}
+                    </Card>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                         <Card title="Fund Allocation">
@@ -546,6 +597,11 @@ export default function InvestorDashboard() {
                                             />
                                             <span className="text-xs text-fundinv-primary font-medium">{f.name}</span>
                                             <span className="text-xs text-fundinv-muted">{fmt(f.value)}</span>
+                                            {f.units > 0 && (
+                                                <span className="text-xs text-fundinv-muted">
+                                                    {f.units.toFixed(4)} units @ {fmt(f.navPerUnit)}
+                                                </span>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
@@ -947,7 +1003,7 @@ export default function InvestorDashboard() {
                     <div className="fixed inset-0 bg-black/40" onClick={() => setShowTopUpModal(false)} />
                     <div className="relative w-full max-w-md bg-white rounded-lg shadow-xl border border-fundinv-border">
                         <div className="px-6 py-4 border-b border-fundinv-border flex items-center justify-between">
-                            <h2 className="text-lg font-semibold text-fundinv-primary">Top Up Account</h2>
+                            <h2 className="text-lg font-semibold text-fundinv-primary">Deposit to a Fund</h2>
                             <button onClick={() => setShowTopUpModal(false)} className="text-fundinv-muted hover:text-fundinv-primary transition" aria-label="Close">
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1028,7 +1084,7 @@ export default function InvestorDashboard() {
                                     />
 
                                     <p className="text-xs text-fundinv-muted">
-                                        Your deposit request will be reviewed by the operations team.
+                                        Choose the fund that will receive the money. Operations approval is followed by payment; units appear only after Stripe confirms payment.
                                     </p>
 
                                     {topUpError && (

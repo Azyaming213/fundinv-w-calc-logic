@@ -5,89 +5,52 @@ export interface User {
     role: 'investor' | 'operations' | 'manager' | 'admin';
     is_active: boolean;
     claims: string[];
-
     hasClaim(claim: string): boolean;
     inRole(role: string): boolean;
 }
 
-const TOKEN_KEY = 'fundinv_token';
+type StoredUser = Omit<User, 'hasClaim' | 'inRole'>;
+const USER_KEY = 'fundinv_user';
 
-export function setToken(token: string): void {
+export function setSessionUser(user: StoredUser): void {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(TOKEN_KEY, token);
-}
-
-export function getToken(): string | null {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem(TOKEN_KEY);
-}
-
-export function clearToken(): void {
-    if (typeof window === 'undefined') return;
-    localStorage.removeItem(TOKEN_KEY);
-}
-
-export function decodeToken(): { sub: string; email: string; role: string; full_name: string; claims: string[]; exp: number } | null {
-    const token = getToken();
-    if (!token) return null;
-    try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        return {
-            sub: payload.sub,
-            email: payload.email,
-            role: payload.role,
-            full_name: payload.full_name || '',
-            claims: payload.claims || [],
-            exp: payload.exp,
-        };
-    } catch {
-        return null;
-    }
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export function getUser(): User | null {
-    const payload = decodeToken();
-    if (!payload) return null;
-    if (payload.exp * 1000 < Date.now()) {
-        clearToken();
+    if (typeof window === 'undefined') return null;
+    try {
+        const stored = localStorage.getItem(USER_KEY);
+        if (!stored) return null;
+        const value = JSON.parse(stored) as StoredUser;
+        return {
+            ...value,
+            claims: value.claims || [],
+            hasClaim(claim: string) { return this.claims.includes(claim); },
+            inRole(role: string) { return this.role === role; },
+        };
+    } catch {
+        clearAuth();
         return null;
     }
-    const user: User = {
-        id: payload.sub,
-        email: payload.email,
-        full_name: payload.full_name,
-        role: payload.role as User['role'],
-        is_active: true,
-        claims: payload.claims,
-        hasClaim(claim: string): boolean {
-            return this.claims.includes(claim);
-        },
-        inRole(role: string): boolean {
-            return this.role === role;
-        },
-    };
-    return user;
 }
+
+// Kept temporarily for call-site compatibility; authentication tokens are
+// HTTP-only cookies and are intentionally unavailable to JavaScript.
+export function getToken(): null { return null; }
 
 export function clearAuth(): void {
-    clearToken();
+    if (typeof window !== 'undefined') localStorage.removeItem(USER_KEY);
 }
 
-export function isAuthenticated(): boolean {
-    return decodeToken() !== null;
-}
+export function isAuthenticated(): boolean { return getUser() !== null; }
 
 export function getDashboardPath(role: User['role']): string {
     switch (role) {
-        case 'admin':
-            return '/dashboard/admin';
-        case 'operations':
-            return '/dashboard/operations';
-        case 'manager':
-            return '/dashboard/manager';
-        case 'investor':
-            return '/dashboard/investor';
-        default:
-            return '/';
+        case 'admin': return '/dashboard/admin';
+        case 'operations': return '/dashboard/operations';
+        case 'manager': return '/dashboard/manager';
+        case 'investor': return '/dashboard/investor';
+        default: return '/';
     }
 }

@@ -3,16 +3,15 @@
 import Layout from './components/Layout';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { getToken, getUser, getDashboardPath } from './lib/auth';
+import { getUser, getDashboardPath } from './lib/auth';
 
 export default function Home() {
     const router = useRouter();
     const [checking, setChecking] = useState(true);
 
     useEffect(() => {
-        const token = getToken();
         const user = getUser();
-        if (token && user) {
+        if (user) {
             const dash = getDashboardPath(user.role);
             router.replace(dash);
             return;

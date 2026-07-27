@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,10 @@ from jobs.scheduler import start_scheduler, stop_scheduler
 from database import SessionLocal
 from models import Role, RoleClaim
 import appconstants as AppConstants
+from config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def sync_role_claims():
@@ -32,13 +37,19 @@ def sync_role_claims():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_scheduler()
+    if settings.ENVIRONMENT.lower() == "production" and settings.COOKIE_SECURE.lower() != "true":
+        raise RuntimeError("COOKIE_SECURE must be true in production")
+    scheduler_enabled = settings.ENABLE_SCHEDULER.lower() == "true"
+    if scheduler_enabled:
+        start_scheduler()
     try:
         sync_role_claims()
     except Exception:
-        pass
+        logger.exception("Role-claim synchronization failed")
+        raise
     yield
-    stop_scheduler()
+    if scheduler_enabled:
+        stop_scheduler()
 
 
 app = FastAPI(
@@ -49,13 +60,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Replace with your frontend URLs in production
+allowed_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

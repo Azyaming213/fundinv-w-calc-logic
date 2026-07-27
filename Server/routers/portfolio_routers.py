@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,12 +9,11 @@ from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
 
 from database import get_db
-from models import PortfolioHolding, Investor, InvestmentAccount, InvestmentTransaction, User, FundFlow, Fund
+from models import PortfolioHolding, Investor, InvestmentAccount, InvestmentTransaction, User, FundFlow, Fund, FundPosition, FundValuation
 from dependencies import require_claim
 from schemas.auth_schema import StandardResponse
 from schemas.portfolio_schema import CreateAccountRequest, UpdateAccountRequest
 from services.audit_service import log_event
-from services.alpaca_service import get_positions, place_order
 from services.pnl_service import compute_investor_pnl, compute_fund_return, compute_unrealized_pnl, snapshot_daily_holdings
 from config import settings
 import appconstants as AppConstants
@@ -39,15 +39,21 @@ def get_chart_data(current_user=Depends(require_claim(AppConstants.CLAIMS["readO
         .order_by(PortfolioHolding.holding_date)
         .all()
     )
-    data = [
-        {
-            "holding_date": h.holding_date.isoformat(),
-            "account_value": float(h.account_value),
-            "shareholding_pct": float(h.shareholding_pct),
-            "daily_pnl": float(h.daily_pnl),
-        }
-        for h in holdings
-    ]
+    by_date: dict[str, dict] = {}
+    for holding in holdings:
+        day = (holding.snapshot_date or holding.holding_date.date()).isoformat()
+        row = by_date.setdefault(day, {
+            "holding_date": day,
+            "account_value": 0.0,
+            "opening_value": 0.0,
+            "daily_pnl": 0.0,
+            "net_flow": 0.0,
+        })
+        row["account_value"] += float(holding.account_value or 0)
+        row["opening_value"] += float(holding.opening_value or 0)
+        row["daily_pnl"] += float(holding.daily_pnl or 0)
+        row["net_flow"] += float(holding.net_flow or 0)
+    data = [by_date[key] for key in sorted(by_date)]
     return {"success": True, "data": data, "error": None}
 
 
@@ -65,8 +71,65 @@ def get_summary(current_user: User = Depends(require_claim(AppConstants.CLAIMS["
     total_current_value = sum(float(a.current_value) for a in accounts)
     total_fund_balance = sum(float(mfb_val) for a in accounts for mfb_val in (a.manager_fund_balance or {}).values())
 
-    pnl_report = compute_investor_pnl(db, investor.id)
+    now = datetime.now(timezone.utc)
+    pnl_report = compute_investor_pnl(
+        db,
+        investor.id,
+        start_date=datetime(now.year, 1, 1, tzinfo=timezone.utc),
+        end_date=now,
+    )
+    latest_snapshot_date = (
+        db.query(func.max(PortfolioHolding.snapshot_date))
+        .filter(PortfolioHolding.investor_id == investor.id)
+        .scalar()
+    )
+    today_pnl = Decimal("0")
+    if latest_snapshot_date:
+        today_pnl = sum((
+            Decimal(row.daily_pnl or 0)
+            for row in db.query(PortfolioHolding).filter(
+                PortfolioHolding.investor_id == investor.id,
+                PortfolioHolding.snapshot_date == latest_snapshot_date,
+            ).all()
+        ), Decimal("0"))
     unrealized = compute_unrealized_pnl(db, investor.id)
+
+    positions = db.query(FundPosition).filter(FundPosition.investor_id == investor.id).all()
+    position_rows = []
+    normalized_breakdown: dict[int, dict] = {}
+    normalized_account_values: dict[int, float] = {}
+    normalized_account_balances: dict[int, dict[str, float]] = {}
+    for position in positions:
+        valuation = (
+            db.query(FundValuation)
+            .filter(FundValuation.fund_id == position.fund_id)
+            .order_by(FundValuation.valuation_date.desc())
+            .first()
+        )
+        nav = float(valuation.nav_per_unit) if valuation else float(position.fund.current_price or 1)
+        value = float(position.units) * nav
+        row = normalized_breakdown.setdefault(position.fund_id, {
+            "fund": position.fund.name,
+            "fund_id": position.fund_id,
+            "amount": 0.0,
+            "units": 0.0,
+            "nav_per_unit": nav,
+        })
+        row["amount"] += value
+        row["units"] += float(position.units)
+        normalized_account_values[position.investment_account_id] = normalized_account_values.get(position.investment_account_id, 0.0) + value
+        normalized_account_balances.setdefault(position.investment_account_id, {})[str(position.fund_id)] = value
+        position_rows.append({
+            "investment_account_id": position.investment_account_id,
+            "fund_id": position.fund_id,
+            "fund": position.fund.name,
+            "units": float(position.units),
+            "nav_per_unit": nav,
+            "market_value": value,
+            "cost_basis": float(position.cost_basis),
+        })
+    if positions:
+        total_fund_balance = sum(normalized_account_values.values())
 
     fund_totals: dict[str, float] = {}
     fund_ids_seen: set[int] = set()
@@ -83,7 +146,9 @@ def get_summary(current_user: User = Depends(require_claim(AppConstants.CLAIMS["
             fund_name = str(fund_id)
             fund_totals[fund_name] = fund_totals.get(fund_name, 0) + float(amount)
 
-    if fund_ids_seen:
+    if normalized_breakdown:
+        fund_breakdown = sorted(normalized_breakdown.values(), key=lambda item: -item["amount"])
+    elif fund_ids_seen:
         funds_map = {}
         for f in db.query(Fund).filter(Fund.id.in_(fund_ids_seen)).all():
             funds_map[str(f.id)] = f.name
@@ -100,8 +165,10 @@ def get_summary(current_user: User = Depends(require_claim(AppConstants.CLAIMS["
 
     account_list = []
     for a in accounts:
-        mfb_total = sum(float(v) for v in (a.manager_fund_balance or {}).values())
+        mfb_total = normalized_account_values.get(a.id, sum(float(v) for v in (a.manager_fund_balance or {}).values()))
         unallocated = float((a.manager_fund_balance or {}).get("_unallocated", 0))
+        display_balances = dict(a.manager_fund_balance or {})
+        display_balances.update(normalized_account_balances.get(a.id, {}))
         account_list.append({
             "id": a.id,
             "account_name": a.account_name,
@@ -111,7 +178,7 @@ def get_summary(current_user: User = Depends(require_claim(AppConstants.CLAIMS["
             "current_value": float(a.current_value),
             "fund_balance": mfb_total,
             "unallocated_balance": unallocated,
-            "manager_fund_balance": a.manager_fund_balance or {},
+            "manager_fund_balance": display_balances,
             "fund_allocations": a.fund_allocations or {},
             "investment_strategy": a.investment_strategy,
         })
@@ -124,8 +191,10 @@ def get_summary(current_user: User = Depends(require_claim(AppConstants.CLAIMS["
             "total_fund_balance": total_fund_balance,
             "total_account_value": total_current_value + total_fund_balance,
             "fund_breakdown": fund_breakdown,
+            "fund_positions": position_rows,
             "accounts": account_list,
             "pnl": pnl_report,
+            "today_pnl": float(today_pnl),
             "unrealized": unrealized,
         },
         error=None,
@@ -272,38 +341,35 @@ def close_account(
     if account.status == "closed":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account is already closed")
 
-    positions = get_positions()
-    liquidated = []
-    if isinstance(positions, list):
-        for pos in positions:
-            try:
-                market_value = float(pos.get("market_value", 0))
-                if market_value > 0:
-                    result = place_order(
-                        symbol=pos.get("symbol", ""),
-                        notional=market_value,
-                        side="sell",
-                    )
-                    if not result.get("error"):
-                        liquidated.append({
-                            "symbol": pos.get("symbol"),
-                            "market_value": market_value,
-                            "order_id": result.get("id"),
-                        })
-            except Exception:
-                continue
+    open_position = db.query(FundPosition).filter(
+        FundPosition.investment_account_id == account.id,
+        FundPosition.units > 0,
+    ).first()
+    pending_flow = db.query(FundFlow).filter(
+        FundFlow.investment_account_id == account.id,
+        FundFlow.status.in_([
+            "pending_ops_team",
+            "approved_pending_payment",
+            "awaiting_payout_setup",
+            "pending_fund_transfer",
+        ]),
+    ).first()
+    mfb_total = sum(float(v) for v in (account.manager_fund_balance or {}).values())
+    if open_position or pending_flow or abs(mfb_total) > 0.005:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account cannot be closed while it has fund units, a pending fund flow, or a non-zero fund balance. Withdraw or transfer the balance first.",
+        )
 
     account.status = "closed"
     account.deleted_at = datetime.now(timezone.utc)
     db.commit()
 
-    mfb_total = sum(float(v) for v in (account.manager_fund_balance or {}).values())
-
     log_event(
         db=db,
         user_id=current_user.id,
         action="account_closed",
-        details=f"Account {account.account_name} ({account.account_number}) closed. Liquidated: {len(liquidated)} positions, fund balance: ${mfb_total:,.2f}",
+        details=f"Account {account.account_name} ({account.account_number}) closed with zero balance",
         entity_type="account",
         entity_id=account.id,
         status="success",
@@ -315,7 +381,7 @@ def close_account(
             "account_id": account.id,
             "account_name": account.account_name,
             "status": "closed",
-            "liquidated_positions": liquidated,
+            "liquidated_positions": [],
             "remaining_fund_balance": mfb_total,
         },
         error=None,
@@ -692,6 +758,13 @@ def get_holdings(
             "shareholding_pct": float(h.shareholding_pct),
             "daily_pnl": float(h.daily_pnl),
             "fund_nav": float(h.fund_nav) if h.fund_nav else None,
+            "snapshot_date": h.snapshot_date.isoformat() if h.snapshot_date else h.holding_date.date().isoformat(),
+            "units": float(h.units or 0),
+            "nav_per_unit": float(h.nav_per_unit or 0),
+            "opening_value": float(h.opening_value or 0),
+            "opening_shareholding_pct": float(h.opening_shareholding_pct or 0),
+            "closing_value_before_flows": float(h.closing_value_before_flows or 0),
+            "net_flow": float(h.net_flow or 0),
         }
         for h in holdings
     ]

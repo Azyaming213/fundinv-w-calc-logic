@@ -1,6 +1,7 @@
 import stripe
 import uuid
 import secrets
+import logging
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Request, Body
@@ -17,10 +18,12 @@ from services.alpaca_service import get_orders
 from services.auth_service import hash_password
 from services.audit_service import log_event, AUDIT_ACTIONS, get_system_user
 from services.email_service import send_fund_flow_approved_email, send_fund_flow_completed_email, send_fund_flow_rejected_email, send_invite_email
+from services.fund_accounting_service import settle_fund_flow
 from config import settings
 import appconstants as AppConstants
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
+logger = logging.getLogger(__name__)
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
@@ -267,8 +270,21 @@ def list_fund_flows(
         .all()
     )
 
+    status_guidance = {
+        "pending_ops_team": ("Operations review required", "operations_review"),
+        "approved_pending_payment": ("Approved — investor payment required before units are issued", "investor_payment"),
+        "awaiting_payout_setup": ("Approved — investor payout setup required", "payout_setup"),
+        "pending_fund_transfer": ("Payment confirmed — operations completion required", "operations_completion"),
+        "completed": ("Completed — units and account value have been updated", "none"),
+        "failed": ("Provider processing failed — operations attention required", "operations_attention"),
+        "rejected": ("Request rejected", "none"),
+    }
+
     flow_list = []
     for f in flows:
+        status_message, next_action = status_guidance.get(
+            f.status, (f.status.replace("_", " ").title(), "none")
+        )
         flow_list.append({
             "id": f.id,
             "investor_email": f.investor.email if f.investor else None,
@@ -277,6 +293,7 @@ def list_fund_flows(
             "fund_id": f.fund_id,
             "fund_name": f.fund.name if f.fund else None,
             "amount": float(f.amount) if f.amount else 0,
+            "currency": f.currency,
             "status": f.status,
             "request_id": f.request_id,
             "requested_at": f.requested_at.isoformat() if f.requested_at else None,
@@ -284,6 +301,11 @@ def list_fund_flows(
             "processed_by_email": f.processed_by.email if f.processed_by else None,
             "processed_by_name": f.processed_by.full_name if f.processed_by else None,
             "notes": f.notes,
+            "status_message": status_message,
+            "next_action": next_action,
+            # Provider URLs contain flow-specific identifiers. Only the owner
+            # receives the link; admins/operations never need it in this list.
+            "payment_url": f.payment_url if not owns_read_all else None,
         })
 
     return StandardResponse(
@@ -732,48 +754,20 @@ def _set_processor(flow: FundFlow, user: User) -> None:
 
 
 def _settle_flow(db: Session, flow: FundFlow, provider_reference: str | None = None) -> bool:
-    """Apply a provider-confirmed balance change exactly once."""
-    flow = db.query(FundFlow).filter(FundFlow.id == flow.id).with_for_update().first()
-    if not flow:
-        return False
-    if flow.status == "completed":
-        return False
-    account = db.query(InvestmentAccount).filter(InvestmentAccount.id == flow.investment_account_id).with_for_update().first()
-    if not account or not flow.fund_id:
-        raise HTTPException(status_code=400, detail="Fund flow is missing its account or fund")
+    """Compatibility wrapper around the authoritative unit-accounting service."""
+    try:
+        return settle_fund_flow(db, flow, provider_reference).applied
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    from sqlalchemy.orm.attributes import flag_modified
-    mfb = dict(account.manager_fund_balance or {})
-    key = str(flow.fund_id)
-    current = float(mfb.get(key, 0))
-    if flow.flow_type == "deposit":
-        mfb[key] = current + float(flow.amount)
-        account.total_invested = float(account.total_invested or 0) + float(flow.amount)
-        entry_type = "deposit_settled"
-    elif flow.flow_type == "withdrawal":
-        if current < float(flow.amount):
-            raise HTTPException(status_code=409, detail="Fund balance is lower than the withdrawal amount")
-        mfb[key] = current - float(flow.amount)
-        account.total_invested = max(0, float(account.total_invested or 0) - float(flow.amount))
-        entry_type = "withdrawal_settled"
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported settled flow type")
 
-    account.manager_fund_balance = mfb
-    flag_modified(account, "manager_fund_balance")
-    flow.status = "completed"
-    flow.processed_at = datetime.now(timezone.utc)
-    if provider_reference:
-        flow.provider_reference = provider_reference
-    db.add(FundBalanceEntry(
-        investment_account_id=account.id,
-        fund_id=flow.fund_id,
-        fund_flow_id=flow.id,
-        entry_type=entry_type,
-        amount=float(flow.amount) if flow.flow_type == "deposit" else -float(flow.amount),
-        provider_reference=provider_reference,
-    ))
-    return True
+def _stripe_object_dict(value) -> dict:
+    """Normalize StripeObject payloads without relying on Mapping methods."""
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return value
+    raise ValueError("Stripe event object was not a dictionary")
 
 
 @router.post("/fund-flows/{flow_id}/approve", response_model=StandardResponse)
@@ -855,9 +849,6 @@ def approve_fund_flow(
         flow.payment_url = account_link.url
         flow.status = "awaiting_payout_setup"
 
-    db.commit()
-    db.refresh(flow)
-
     audit_action = AUDIT_ACTIONS["FUND_FLOW_DEPOSIT_APPROVED"] if flow.flow_type == "deposit" else AUDIT_ACTIONS["FUND_FLOW_WITHDRAWAL_APPROVED"]
     log_event(
         db=db,
@@ -868,7 +859,10 @@ def approve_fund_flow(
         entity_id=flow.id,
         changes={"amount": float(flow.amount), "status": flow.status, "checkout_url": checkout_url},
         status="success",
+        commit=False,
     )
+    db.commit()
+    db.refresh(flow)
 
     try:
         send_fund_flow_approved_email(
@@ -881,7 +875,7 @@ def approve_fund_flow(
             checkout_url=checkout_url or flow.payment_url,
         )
     except Exception:
-        pass
+        logger.exception("Approved-flow email failed for flow %s", flow.id)
 
     return StandardResponse(
         success=True,
@@ -889,7 +883,7 @@ def approve_fund_flow(
             "id": flow.id,
             "status": flow.status,
             "checkout_url": checkout_url,
-            "message": "Request approved. Payment link sent to investor." if checkout_url else "Request approved. Payout setup link sent to investor.",
+            "message": "Approved; investor payment is still required before units are issued." if checkout_url else "Approved; investor payout setup is still required.",
         },
         error=None,
     )
@@ -919,9 +913,6 @@ def complete_fund_flow(
 
     _settle_flow(db, flow)
 
-    db.commit()
-    db.refresh(flow)
-
     audit_action = AUDIT_ACTIONS["FUND_FLOW_DEPOSIT_COMPLETED"] if flow.flow_type == "deposit" else AUDIT_ACTIONS["FUND_FLOW_WITHDRAWAL_COMPLETED"]
     log_event(
         db=db,
@@ -932,7 +923,10 @@ def complete_fund_flow(
         entity_id=flow.id,
         changes={"amount": float(flow.amount), "status": "completed"},
         status="success",
+        commit=False,
     )
+    db.commit()
+    db.refresh(flow)
 
     try:
         send_fund_flow_completed_email(
@@ -943,7 +937,7 @@ def complete_fund_flow(
             request_id=flow.request_id,
         )
     except Exception:
-        pass
+        logger.exception("Completed-flow email failed for flow %s", flow.id)
 
     return StandardResponse(
         success=True,
@@ -976,9 +970,6 @@ def reject_fund_flow(
     if body.notes:
         flow.notes = f"{flow.notes or ''}\n[Ops: {body.notes}]".strip()
 
-    db.commit()
-    db.refresh(flow)
-
     audit_action = AUDIT_ACTIONS["FUND_FLOW_DEPOSIT_REJECTED"] if flow.flow_type == "deposit" else AUDIT_ACTIONS["FUND_FLOW_WITHDRAWAL_REJECTED"]
     log_event(
         db=db,
@@ -989,7 +980,10 @@ def reject_fund_flow(
         entity_id=flow.id,
         changes={"amount": float(flow.amount), "status": "rejected", "notes": body.notes},
         status="success",
+        commit=False,
     )
+    db.commit()
+    db.refresh(flow)
 
     try:
         notes_for_email = None
@@ -1006,7 +1000,7 @@ def reject_fund_flow(
             notes=notes_for_email,
         )
     except Exception:
-        pass
+        logger.exception("Rejected-flow email failed for flow %s", flow.id)
 
     return StandardResponse(
         success=True,
@@ -1080,7 +1074,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     system_user = get_system_user(db)
 
     if event["type"] == "checkout.session.completed":
-        session_obj = event["data"]["object"]
+        session_obj = _stripe_object_dict(event["data"]["object"])
         session_id = session_obj["id"]
 
         flow = db.query(FundFlow).filter(FundFlow.provider_reference == session_id).first()
@@ -1105,7 +1099,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 )
 
     elif event["type"] == "checkout.session.expired":
-        session_obj = event["data"]["object"]
+        session_obj = _stripe_object_dict(event["data"]["object"])
         session_id = session_obj["id"]
 
         now = datetime.now(timezone.utc)
@@ -1116,7 +1110,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         db.commit()
 
     elif event["type"] == "account.updated":
-        account_obj = event["data"]["object"]
+        account_obj = _stripe_object_dict(event["data"]["object"])
         investor = db.query(Investor).filter(Investor.stripe_connect_account_id == account_obj.get("id")).first()
         if investor and account_obj.get("payouts_enabled"):
             pending = db.query(FundFlow).filter(
@@ -1137,7 +1131,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     db.commit()
 
     elif event["type"] in ("payout.paid", "payout.failed"):
-        payout = event["data"]["object"]
+        payout = _stripe_object_dict(event["data"]["object"])
         flow_id = (payout.get("metadata") or {}).get("fund_flow_id")
         flow = db.query(FundFlow).filter(FundFlow.id == int(flow_id)).first() if flow_id else db.query(FundFlow).filter(FundFlow.provider_reference == payout.get("id")).first()
         if flow and flow.status == "pending_fund_transfer":

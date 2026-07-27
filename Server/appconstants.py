@@ -55,6 +55,7 @@ CLAIMS_BY_ROLE: dict[str, list[str]] = {
         CLAIMS["readOwnFundFlows"],
         CLAIMS["createFeedback"],
         CLAIMS["readOwnFeedback"],
+        CLAIMS["executeTrades"],
     ],
     ROLES["MANAGER"]: [
         CLAIMS["readDashboard"],

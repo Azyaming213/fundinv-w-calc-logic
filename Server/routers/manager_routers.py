@@ -1,6 +1,6 @@
 import csv
 from io import StringIO
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
@@ -8,16 +8,105 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 
 from database import get_db
-from models import User, Investor, InvestmentAccount, Manager, Fund, Order, FundInvestment, FundTargeting, FundComponent
+from models import User, Investor, InvestmentAccount, Manager, Fund, FundPosition, FundValuation, Order, FundInvestment, FundTargeting, FundComponent
 from schemas.auth_schema import StandardResponse
 from dependencies import get_current_user, require_claim
 from services.alpaca_service import place_order, get_positions, search_assets, get_snapshots
 from services.audit_service import log_event, AUDIT_ACTIONS
+from services.pnl_service import compute_fund_return
 import appconstants as AppConstants
 
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/manager", tags=["Manager"])
+
+
+class WhatIfAllocation(BaseModel):
+    fund_id: int
+    weight_pct: float = Field(..., ge=0, le=100)
+
+
+class WhatIfRequest(BaseModel):
+    start_date: datetime
+    end_date: datetime
+    allocations: list[WhatIfAllocation]
+
+
+def _managed_funds(db: Session, manager: Manager) -> list[Fund]:
+    return db.query(Fund).filter(Fund.creator_manager_id == manager.id).order_by(Fund.name).all()
+
+
+@router.get("/performance-analysis", response_model=StandardResponse)
+def performance_analysis(
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["readAssignedInvestors"])),
+    db: Session = Depends(get_db),
+):
+    manager = _get_manager(db, current_user.email)
+    if manager is None:
+        raise HTTPException(status_code=404, detail="Manager profile not found")
+    end_date = end_date or datetime.now(timezone.utc)
+    start_date = start_date or (end_date - timedelta(days=30))
+    if start_date > end_date:
+        raise HTTPException(status_code=400, detail="start_date must not be after end_date")
+    funds = _managed_funds(db, manager)
+    fund_ids = [fund.id for fund in funds]
+    values = {fund_id: 0.0 for fund_id in fund_ids}
+    for position in db.query(FundPosition).filter(FundPosition.fund_id.in_(fund_ids)).all() if fund_ids else []:
+        latest = db.query(FundValuation).filter(FundValuation.fund_id == position.fund_id).order_by(FundValuation.valuation_date.desc()).first()
+        nav = float(latest.nav_per_unit) if latest else float(position.fund.current_price or 1)
+        values[position.fund_id] += float(position.units) * nav
+    total_value = sum(values.values())
+    drivers = []
+    for fund in funds:
+        report = compute_fund_return(db, fund.id, start_date, end_date)
+        weight = values[fund.id] / total_value * 100 if total_value else 0.0
+        fund_return = float(report["fund_return_pct"])
+        drivers.append({
+            "fund_id": fund.id, "fund_name": fund.name, "ticker": fund.ticker,
+            "market_value": values[fund.id], "weight_pct": weight,
+            "return_pct": fund_return, "contribution_pct": weight * fund_return / 100,
+        })
+    return StandardResponse(success=True, data={
+        "start_date": start_date.isoformat(), "end_date": end_date.isoformat(),
+        "portfolio_value": total_value, "portfolio_return_pct": sum(row["contribution_pct"] for row in drivers),
+        "drivers": drivers,
+    }, error=None)
+
+
+@router.post("/performance-analysis/what-if", response_model=StandardResponse)
+def performance_what_if(
+    request: WhatIfRequest,
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["readAssignedInvestors"])),
+    db: Session = Depends(get_db),
+):
+    manager = _get_manager(db, current_user.email)
+    if manager is None:
+        raise HTTPException(status_code=404, detail="Manager profile not found")
+    if request.start_date > request.end_date:
+        raise HTTPException(status_code=400, detail="start_date must not be after end_date")
+    total_weight = sum(item.weight_pct for item in request.allocations)
+    if abs(total_weight - 100) > 0.01:
+        raise HTTPException(status_code=400, detail="What-if allocation weights must total 100%")
+    allowed = {fund.id: fund for fund in _managed_funds(db, manager)}
+    if len({item.fund_id for item in request.allocations}) != len(request.allocations):
+        raise HTTPException(status_code=400, detail="Each fund may appear only once")
+    rows = []
+    for item in request.allocations:
+        fund = allowed.get(item.fund_id)
+        if not fund:
+            raise HTTPException(status_code=404, detail=f"Managed fund {item.fund_id} not found")
+        report = compute_fund_return(db, fund.id, request.start_date, request.end_date)
+        fund_return = float(report["fund_return_pct"])
+        rows.append({
+            "fund_id": fund.id, "fund_name": fund.name, "weight_pct": item.weight_pct,
+            "return_pct": fund_return, "contribution_pct": item.weight_pct * fund_return / 100,
+        })
+    return StandardResponse(success=True, data={
+        "start_date": request.start_date.isoformat(), "end_date": request.end_date.isoformat(),
+        "hypothetical_return_pct": sum(row["contribution_pct"] for row in rows), "drivers": rows,
+    }, error=None)
 
 
 def _get_manager(db: Session, email: str) -> Manager | None:

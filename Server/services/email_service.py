@@ -8,6 +8,25 @@ def _get_yag():
     return yagmail.SMTP(user=settings.SMTP_EMAIL, password=settings.SMTP_PASSWORD)
 
 
+def send_password_reset_email(to_email: str, full_name: str, token: str) -> bool:
+    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+    html_body = f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#1e293b">
+      <h1 style="font-size:20px">Reset your FundInv password</h1>
+      <p>Hi {full_name},</p>
+      <p>A password reset was requested for your account. This link expires in one hour.</p>
+      <p><a href="{reset_url}">Reset password</a></p>
+      <p style="font-size:12px;color:#64748b;word-break:break-all">{reset_url}</p>
+      <p style="font-size:12px;color:#64748b">If you did not request this, ignore this email.</p>
+    </div>
+    """
+    try:
+        _get_yag().send(to=to_email, subject="FundInv — Password reset", contents=html_body)
+        return True
+    except Exception:
+        return False
+
+
 def send_invite_email(to_email: str, full_name: str, token: str, expires_at: str, role: str) -> bool:
     frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
     register_url = f"{frontend_url}/register?token={token}"

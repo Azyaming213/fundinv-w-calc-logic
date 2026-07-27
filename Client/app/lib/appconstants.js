@@ -55,6 +55,7 @@ export const CLAIMS_BY_ROLE = {
         CLAIMS.readOwnFundFlows,
         CLAIMS.createFeedback,
         CLAIMS.readOwnFeedback,
+        CLAIMS.executeTrades,
     ],
     [ROLES.MANAGER]: [
         CLAIMS.readDashboard,
@@ -123,7 +124,7 @@ export const getRoleDisplayName = (role) => {
     return displayNames[role] || role;
 };
 
-export default {
+const AppConstants = {
     ROLES,
     CLAIMS,
     CLAIMS_BY_ROLE,
@@ -133,3 +134,5 @@ export default {
     getAllRoles,
     getRoleDisplayName,
 };
+
+export default AppConstants;

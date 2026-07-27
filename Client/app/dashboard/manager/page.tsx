@@ -12,11 +12,7 @@ export default function ManagerDashboard() {
   const [funds, setFunds] = useState<ManagerFund[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
+  async function fetchData() {
     setLoading(true);
     try {
       const [invRes, fundRes] = await Promise.all([
@@ -31,7 +27,11 @@ export default function ManagerDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }
+
+  useEffect(() => {
+    fetchData();
+  }, []);
 
   const activeFunds = funds.filter((f) => f.is_active);
   const activeInvestors = investors.filter((i) => i.is_active);

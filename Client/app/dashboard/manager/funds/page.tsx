@@ -45,7 +45,7 @@ export default function FundsManagementPage() {
     fetchFunds();
   }, []);
 
-  const fetchFunds = async () => {
+  async function fetchFunds() {
     setLoading(true);
     try {
       const data = await api.get<{ funds: ManagerFund[] }>('/api/manager/funds');
@@ -55,7 +55,7 @@ export default function FundsManagementPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   const fetchFundInvestors = async (fundId: number) => {
     setInvestorsLoading((prev) => ({ ...prev, [fundId]: true }));
@@ -131,7 +131,7 @@ export default function FundsManagementPage() {
     setCreating(true);
     setCreateErr(null);
     try {
-      const payload: any = {
+      const payload = {
         name: fname.trim(),
         description: fdesc.trim(),
         strategy: fstrategy,
@@ -502,7 +502,7 @@ export default function FundsManagementPage() {
                                 <p className="text-sm text-fundinv-muted">No holdings configured yet.</p>
                               ) : (
                                 <div className="space-y-2">
-                                  {(fund.portfolio_composition as any[]).map((h: any, i: number) => (
+                                  {fund.portfolio_composition.map((h, i) => (
                                     <div key={i} className="flex items-center justify-between p-2 bg-white rounded border border-fundinv-border">
                                       <div>
                                         <span className="text-sm font-medium text-fundinv-primary">{h.symbol}</span>

@@ -1,25 +1,21 @@
-import { getToken, clearAuth } from './auth';
+import { clearAuth } from './auth';
 import type { ApiError } from './types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 async function request<T>(
   method: string,
   path: string,
   body?: unknown
 ): Promise<T> {
-  const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
   const response = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    credentials: 'include',
   });
 
   if (response.status === 401) {
@@ -51,7 +47,10 @@ async function request<T>(
     if (typeof detail === 'string') {
       message = detail;
     } else if (Array.isArray(detail)) {
-      message = detail.map((e: any) => `${e.loc ? e.loc.join('.') : ''}: ${e.msg}`).join('; ');
+      message = detail.map((entry: unknown) => {
+        const error = entry as { loc?: Array<string | number>; msg?: string };
+        return `${error.loc ? error.loc.join('.') : ''}: ${error.msg || 'Invalid value'}`;
+      }).join('; ');
     }
     throw {
       status: response.status,

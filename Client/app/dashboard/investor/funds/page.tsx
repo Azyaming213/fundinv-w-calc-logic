@@ -89,7 +89,7 @@ export default function FundsPage() {
 
     useEffect(() => {
         fetchAccounts();
-    }, []);
+    }, [fetchAccounts]);
 
     const openInvestModal = (fund: Fund) => {
         setInvestFund(fund);
@@ -150,6 +150,15 @@ export default function FundsPage() {
     };
 
     const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
+
+    const updateFundRisk = async (fundId: number, risk: string) => {
+        try {
+            await api.put(`/api/funds/${fundId}/risk-tolerance`, { risk_tolerance: risk });
+            setFunds((current) => current.map((fund) => fund.id === fundId ? { ...fund, investor_risk_tolerance: risk as Fund['investor_risk_tolerance'] } : fund));
+        } catch (err) {
+            setError((err as { message?: string }).message || 'Unable to update risk tolerance');
+        }
+    };
 
     return (
         <div className="max-w-6xl mx-auto px-8 py-8">
@@ -284,6 +293,20 @@ export default function FundsPage() {
                             {fund.description && (
                                 <p className="text-xs text-fundinv-muted line-clamp-2 mb-3">{fund.description}</p>
                             )}
+
+                            <label className="block text-xs text-fundinv-muted mb-3">
+                                Your risk tolerance for this fund
+                                <select
+                                    value={fund.investor_risk_tolerance || 'balanced'}
+                                    onChange={(e) => updateFundRisk(fund.id, e.target.value)}
+                                    className="mt-1 w-full px-2 py-1.5 border border-fundinv-border rounded-md bg-white text-fundinv-primary"
+                                >
+                                    <option value="conservative">Conservative</option>
+                                    <option value="balanced">Balanced</option>
+                                    <option value="growth">Growth</option>
+                                    <option value="aggressive">Aggressive</option>
+                                </select>
+                            </label>
 
                             {fund.ticker && fund.fund_type !== 'managed' && (
                                 <Button variant="primary" className="w-full" onClick={() => openInvestModal(fund)}>

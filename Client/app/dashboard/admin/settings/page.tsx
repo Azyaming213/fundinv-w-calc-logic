@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Card from '../../../components/Card';
 import Button from '../../../components/Button';
 import InviteModal from '../../../components/InviteModal';
@@ -14,20 +14,21 @@ export default function AppSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [inviteRequests, setInviteRequests] = useState<{ id: number; email: string; full_name: string; role: string; status: string; requested_by: string | null }[]>([]);
+  type InviteRequestRow = { id: number; email: string; full_name: string; role: string; status: string; requested_by: string | null };
+  const [inviteRequests, setInviteRequests] = useState<InviteRequestRow[]>([]);
 
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3000);
   };
 
-  const fetchInvites = async () => {
+  const fetchInvites = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const data = await api.get<{ invites: Invite[] }>('/api/auth/invites');
       setInvites(data.invites || []);
-      const requestData = await api.get<{ requests: typeof inviteRequests }>('/api/admin/invite-requests');
+      const requestData = await api.get<{ requests: InviteRequestRow[] }>('/api/admin/invite-requests');
       setInviteRequests(requestData.requests || []);
     } catch (err) {
       const message = (err as { message?: string }).message || 'Failed to load invites';
@@ -35,7 +36,7 @@ export default function AppSettingsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const reviewInviteRequest = async (requestId: number, decision: 'approve' | 'reject') => {
     const notes = decision === 'reject' ? prompt('Reason for rejection') || 'Rejected by administrator' : undefined;
@@ -50,7 +51,7 @@ export default function AppSettingsPage() {
 
   useEffect(() => {
     fetchInvites();
-  }, []);
+  }, [fetchInvites]);
 
   const handleInviteCreated = () => {
     setShowInviteModal(false);
