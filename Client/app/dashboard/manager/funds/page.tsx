@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Card from '../../../components/Card';
 import Button from '../../../components/Button';
 import Input from '../../../components/Input';
@@ -40,6 +40,7 @@ export default function FundsManagementPage() {
   const [stockResults, setStockResults] = useState<StockResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const searchRequestId = useRef(0);
 
   useEffect(() => {
     fetchFunds();
@@ -86,17 +87,33 @@ export default function FundsManagementPage() {
       setShowDropdown(false);
       return;
     }
+    const requestId = ++searchRequestId.current;
     setSearching(true);
     try {
       const data = await api.get<{ stocks: StockResult[] }>(`/api/manager/search-stocks?q=${encodeURIComponent(q)}`);
+      if (requestId !== searchRequestId.current) return;
       setStockResults(data.stocks || []);
       setShowDropdown(true);
     } catch {
+      if (requestId !== searchRequestId.current) return;
       setStockResults([]);
     } finally {
-      setSearching(false);
+      if (requestId === searchRequestId.current) setSearching(false);
     }
   }, []);
+
+  useEffect(() => {
+    const query = stockQuery.trim();
+    if (!query) {
+      searchRequestId.current += 1;
+      setStockResults([]);
+      setShowDropdown(false);
+      setSearching(false);
+      return;
+    }
+    const timer = window.setTimeout(() => searchStocks(query), 300);
+    return () => window.clearTimeout(timer);
+  }, [stockQuery, searchStocks]);
 
   const addHolding = (stock: StockResult) => {
     if (holdings.find((h) => h.symbol === stock.symbol)) return;
@@ -123,7 +140,11 @@ export default function FundsManagementPage() {
       setCreateErr('Fund name is required');
       return;
     }
-    if (holdings.length > 0 && totalAllocation !== 100) {
+    if (holdings.length === 0) {
+      setCreateErr('Add at least one underlying security or approved fund');
+      return;
+    }
+    if (Math.abs(totalAllocation - 100) > 0.01) {
       setCreateErr(`Portfolio allocations must total 100% (currently ${totalAllocation}%)`);
       return;
     }
@@ -209,7 +230,7 @@ export default function FundsManagementPage() {
           <h1 className="text-2xl font-semibold text-fundinv-primary">Fund Management</h1>
           <p className="text-sm text-fundinv-muted mt-1">Create and manage your investment funds</p>
         </div>
-        <Button onClick={() => { setShowForm(true); resetForm(); }}>
+        <Button onClick={() => { resetForm(); setShowForm(true); }}>
           + Create Fund
         </Button>
       </div>
@@ -315,7 +336,7 @@ export default function FundsManagementPage() {
           <div className="mb-6">
             <h3 className="text-sm font-semibold text-fundinv-muted uppercase tracking-wider mb-4">
               Portfolio Composition
-              <span className="text-fundinv-muted font-normal normal-case ml-2">(optional)</span>
+              <span className="text-fundinv-muted font-normal normal-case ml-2">(required, total 100%)</span>
             </h3>
 
             {/* Stock Search */}
@@ -323,9 +344,9 @@ export default function FundsManagementPage() {
               <div className="flex gap-2">
                 <div className="flex-1 relative">
                   <Input
-                    placeholder="Search stocks by name or ticker..."
+                    placeholder="Search underlying securities or approved funds..."
                     value={stockQuery}
-                    onChange={(e) => { setStockQuery(e.target.value); searchStocks(e.target.value); }}
+                    onChange={(e) => setStockQuery(e.target.value)}
                   />
                   {showDropdown && stockResults.length > 0 && (
                     <div className="absolute z-10 w-full mt-1 bg-white border border-fundinv-border rounded-md shadow-lg max-h-48 overflow-y-auto">

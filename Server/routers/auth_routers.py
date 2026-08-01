@@ -20,6 +20,7 @@ from schemas.auth_schema import (
 from services.auth_service import hash_password, verify_password, create_access_token, create_mfa_token, decode_access_token, decode_mfa_token
 from services.audit_service import log_event, AUDIT_ACTIONS
 from services.email_service import send_invite_email, send_password_reset_email
+from services.fund_targeting_service import expose_active_funds_to_investor
 from services.mfa_service import generate_mfa_secret, generate_otpauth_uri, generate_qr_code_base64, verify_totp
 from dependencies import get_current_user, require_claim, require_any_claim, get_client_info
 import appconstants as AppConstants
@@ -155,6 +156,8 @@ def register(request: RegisterRequest, req: Request, db: Session = Depends(get_d
             manager_id=manager_id,
         )
         db.add(investor)
+        db.flush()
+        expose_active_funds_to_investor(db, investor.id)
         db.commit()
     elif invite.role and invite.role.name == "manager":
         manager = Manager(

@@ -605,31 +605,36 @@ def create_managed_fund(
             for item in holdings
         ],
     )
-    db.add(fund)
-    db.commit()
+    try:
+        db.add(fund)
+        db.flush()
+
+        for item in holdings:
+            db.add(FundComponent(
+                fund_id=fund.id,
+                component_fund_id=item.get("fund_id"),
+                symbol=item["symbol"].upper(),
+                component_name=item.get("name", item["symbol"]),
+                asset_type=item.get("asset_type", "stock"),
+                target_pct=float(item["allocation"]),
+            ))
+
+        log_event(
+            db=db,
+            user_id=current_user.id,
+            action=AUDIT_ACTIONS["FUND_CREATED"],
+            details=f"Fund '{fund.name}' created by {current_user.email}",
+            entity_type="fund",
+            entity_id=fund.id,
+            changes={"name": fund.name, "strategy": fund.strategy, "risk_level": fund.risk_level},
+            status="success",
+            commit=False,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(fund)
-
-    for item in holdings:
-        db.add(FundComponent(
-            fund_id=fund.id,
-            component_fund_id=item.get("fund_id"),
-            symbol=item["symbol"].upper(),
-            component_name=item.get("name", item["symbol"]),
-            asset_type=item.get("asset_type", "stock"),
-            target_pct=float(item["allocation"]),
-        ))
-    db.commit()
-
-    log_event(
-        db=db,
-        user_id=current_user.id,
-        action=AUDIT_ACTIONS["FUND_CREATED"],
-        details=f"Fund '{fund.name}' created by {current_user.email}",
-        entity_type="fund",
-        entity_id=fund.id,
-        changes={"name": fund.name, "strategy": fund.strategy, "risk_level": fund.risk_level},
-        status="success",
-    )
 
     return StandardResponse(success=True, data={
         "id": fund.id,

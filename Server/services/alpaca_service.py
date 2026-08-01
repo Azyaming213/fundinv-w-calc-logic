@@ -1,3 +1,6 @@
+from threading import Lock
+from time import monotonic
+
 import requests
 from config import settings
 
@@ -5,6 +8,17 @@ ALPACA_HEADERS = {
     "APCA-API-KEY-ID": settings.ALPACA_API_KEY,
     "APCA-API-SECRET-KEY": settings.ALPACA_SECRET_KEY,
 }
+
+_ASSET_CACHE_TTL_SECONDS = 300
+_ASSET_CACHE: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_ASSET_CACHE_LOCK = Lock()
+
+
+def _normalize_asset(asset: dict) -> dict:
+    """Expose Alpaca's reserved ``class`` field under our API's asset_class name."""
+    normalized = dict(asset)
+    normalized["asset_class"] = asset.get("asset_class") or asset.get("class", "")
+    return normalized
 
 
 # ──────────────────────────────────────────────
@@ -29,22 +43,44 @@ def get_account() -> dict:
 # ──────────────────────────────────────────────
 
 def search_assets(query: str = "", asset_class: str = "us_equity", status: str = "active", limit: int = 50) -> list[dict]:
-    params = {
-        "status": status,
-        "asset_class": asset_class,
-        "limit": limit,
-    }
-    if query:
-        params["q"] = query
+    # Alpaca's list-assets endpoint supports status and asset_class filters,
+    # but not free-text q or limit parameters. Fetch the filtered catalogue
+    # and apply those two controls locally so ticker/name searches are reliable.
+    params = {"status": status, "asset_class": asset_class}
     try:
-        resp = requests.get(
-            f"{settings.ALPACA_BASE_URL}/v2/assets",
-            headers=ALPACA_HEADERS,
-            params=params,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        cache_key = (status, asset_class)
+        with _ASSET_CACHE_LOCK:
+            cached_at, cached_assets = _ASSET_CACHE.get(cache_key, (0.0, []))
+            if cached_assets and monotonic() - cached_at < _ASSET_CACHE_TTL_SECONDS:
+                assets = cached_assets
+            else:
+                resp = requests.get(
+                    f"{settings.ALPACA_BASE_URL}/v2/assets",
+                    headers=ALPACA_HEADERS,
+                    params=params,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                assets = [_normalize_asset(asset) for asset in resp.json()]
+                _ASSET_CACHE[cache_key] = (monotonic(), assets)
+        if status:
+            assets = [asset for asset in assets if asset.get("status") == status]
+        if asset_class:
+            assets = [asset for asset in assets if asset.get("asset_class") == asset_class]
+
+        needle = query.strip().casefold()
+        if needle:
+            assets = [
+                asset for asset in assets
+                if needle in str(asset.get("symbol", "")).casefold()
+                or needle in str(asset.get("name", "")).casefold()
+            ]
+            assets.sort(key=lambda asset: (
+                str(asset.get("symbol", "")).casefold() != needle,
+                not str(asset.get("symbol", "")).casefold().startswith(needle),
+                str(asset.get("symbol", "")).casefold(),
+            ))
+        return assets[:max(0, limit)]
     except Exception:
         return []
 
@@ -57,7 +93,7 @@ def get_asset(symbol: str) -> dict:
             timeout=10,
         )
         resp.raise_for_status()
-        return resp.json()
+        return _normalize_asset(resp.json())
     except Exception:
         return {}
 

@@ -19,6 +19,7 @@ from services.auth_service import hash_password
 from services.audit_service import log_event, AUDIT_ACTIONS, get_system_user
 from services.email_service import send_fund_flow_approved_email, send_fund_flow_completed_email, send_fund_flow_rejected_email, send_invite_email
 from services.fund_accounting_service import settle_fund_flow
+from services.fund_targeting_service import expose_fund_to_active_investors
 from services.paynow_demo_service import paynow_qr_data_url
 from config import settings
 import appconstants as AppConstants
@@ -122,11 +123,33 @@ def review_fund(
     fund.reviewed_by_user_id = current_user.id
     fund.reviewed_at = datetime.now(timezone.utc)
     fund.review_notes = body.notes
+    targeted_count = 0
+    eligible_investor_count = 0
+    if body.decision == "approve":
+        targeted_count, eligible_investor_count = expose_fund_to_active_investors(db, fund.id)
+    log_event(
+        db=db,
+        user_id=current_user.id,
+        action=AUDIT_ACTIONS["FUND_UPDATED"],
+        details=f"Fund '{fund.name}' {fund.review_status} by operations",
+        entity_type="fund",
+        entity_id=fund.id,
+        changes={
+            "review_status": fund.review_status,
+            "notes": body.notes,
+            "auto_targeted_investors": targeted_count,
+            "eligible_investors": eligible_investor_count,
+        },
+        status="success",
+        commit=False,
+    )
     db.commit()
-    log_event(db=db, user_id=current_user.id, action=AUDIT_ACTIONS["FUND_UPDATED"],
-              details=f"Fund '{fund.name}' {fund.review_status} by operations", entity_type="fund",
-              entity_id=fund.id, changes={"review_status": fund.review_status, "notes": body.notes}, status="success")
-    return StandardResponse(success=True, data={"id": fund.id, "review_status": fund.review_status}, error=None)
+    return StandardResponse(success=True, data={
+        "id": fund.id,
+        "review_status": fund.review_status,
+        "auto_targeted_investors": targeted_count,
+        "eligible_investors": eligible_investor_count,
+    }, error=None)
 
 
 # ──────────────────────────────────────────────

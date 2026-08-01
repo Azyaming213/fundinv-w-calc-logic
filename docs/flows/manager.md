@@ -61,19 +61,17 @@ sequenceDiagram
     Mgr->>App: Set allocation % for each holding (total must = 100%)
 
     Mgr->>App: Click "Create Fund"
-    App->>API: POST /api/manager/funds { name, description, strategy, risk_level }
+    App->>API: POST /api/manager/funds { name, description, strategy, risk_level, holdings }
     API->>DB: Verify manager profile exists
-    API->>DB: Create Fund (fund_type: managed, creator_manager_id)
+    API->>DB: Atomically create Fund + component holdings + audit record
     API-->>App: { id, name, strategy }
-
-    alt Fund has holdings
-        App->>API: PUT /api/manager/funds/{id}/composition { holdings: [{symbol, allocation}] }
-        API->>DB: Update fund.portfolio_composition JSONB
-        API-->>App: { fund_id, holdings }
-    end
 
     App->>API: GET /api/manager/funds (refresh list)
     App-->>Mgr: Toast: "Fund created successfully" + updated fund list
+
+    Note over Mgr,DB: Operations approval activates the fund
+    API->>DB: Add missing visibility rows for every active investor
+    Note over API,DB: Unique constraint makes retries idempotent; explicit opt-outs remain hidden
 ```
 
 ## 3. View Fund Investors Flow
