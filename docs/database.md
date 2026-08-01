@@ -1,5 +1,9 @@
 # Database Schema
 
+> This long-form inventory includes legacy fields. The normalized accounting
+> sources of truth and current migration head are documented in
+> [Authoritative Fund Portal Workflow](./FUND_PORTAL_WORKFLOW.md).
+
 ## Entity-Relationship Diagram
 
 ```mermaid
@@ -277,8 +281,9 @@ Investor portfolios. Each account holds:
 ### fundinv.fund_flows
 Deposit and withdrawal records. Key columns:
 - **`flow_type`** — `deposit`, `withdrawal`, `investment`
-- **`status`** — `pending` (Stripe), `pending_ops_team`, `pending_fund_transfer`, `completed`, `failed`, `rejected`
+- **`status`** — `awaiting_investor_payment` (demo PayNow), `pending` (Stripe), `pending_ops_team`, `pending_fund_transfer`, `completed`, `failed`, `rejected`
 - **`request_id`** — unique identifier (Stripe session ID or generated `REQ-DEP-*`/`REQ-WTH-*`)
+- **`paid_amount`** and **`payment_received_at`** — provider receipt evidence shown to Operations; demo PayNow copies the fixed requested amount server-side
 - **`processed_by_user_id`** — tracks which admin/ops user processed the flow
 
 ### fundinv.investment_transactions
@@ -303,7 +308,12 @@ Invitation tokens for user onboarding. Created by admins/managers. Each has a un
 
 ```mermaid
 stateDiagram
-    [*] --> pending_ops_team : Investor submits request
+    [*] --> awaiting_investor_payment : Demo PayNow subscription created
+    awaiting_investor_payment --> pending_ops_team : Exact fixed payment recorded
+    awaiting_investor_payment --> rejected : Ops rejects
+    pending_ops_team --> completed : Ops Verify & Complete (matching demo receipt)
+
+    [*] --> pending_ops_team : Manual/Stripe request submitted
 
     pending_ops_team --> pending : Ops approves deposit (Stripe session created)
     pending_ops_team --> pending_fund_transfer : Ops approves withdrawal
@@ -357,6 +367,24 @@ stateDiagram
 | `trading:execute` | — | ✓ | — | — |
 | `transactions:read` | — | ✓ | — | — |
 
+## Challenge Statement Data Mapping
+
+The challenge datasets are represented with normalized, scalable tables rather
+than repeating `Fund 1`, `Fund 2`, and later funds as separate columns:
+
+| Challenge dataset | FundInv structure | Required-field coverage |
+|---|---|---|
+| 5.1 Investor Accounts | `fundinv.investors`, `fundinv.investment_accounts`, and normalized `fundinv_auth.users`/`roles` | Investor ID, name, onboarding date, and role are present |
+| 5.2 Fund Flows | `fundinv.fund_flows` | Investor/request IDs, type, requested/processed dates, amount, and currency are present; status and provider evidence extend the specification |
+| 5.3 Portfolio Holdings | `fundinv.portfolio_holdings` plus `fund_positions` and `fund_valuations` | One row per investor/fund/date replaces fixed Fund 1/Fund 2 columns and preserves shareholding, units, NAV, flows, and P&L |
+| 5.4 Investment Transactions | `fundinv.investment_transactions` | All 20 specified fields are present under normalized names (`order_ticket`, `trade_time`, and `trade_type`), with investor/account/fund links and `net_pnl` added |
+
+The supplied `5.4 Dummy Data` worksheet contains 565 broker rows and one
+instrument symbol, `XAUUSD`. This is an underlying trading instrument—not a
+fund product—and therefore must not appear in `fundinv.funds`. The worksheet's
+unnamed first column is a source row index; `sl` and `tp` are not separate
+columns in the supplied raw export, although both are supported by the database.
+
 ## Seed Data
 
 Running `config/scripts/v0.0.1_seed_data.sql` creates:
@@ -369,10 +397,10 @@ Running `config/scripts/v0.0.1_seed_data.sql` creates:
 | Manager Profiles | 1 (linked to manager@fundinv.com) |
 | Investor Profiles | 2 (investor@fundinv.com, alice@example.com) |
 | Investment Accounts | 2 (Growth Portfolio, Balanced Portfolio) |
-| Funds | 20 (QQQ, VOO, SPY, NVDA, TSLA, etc.) |
+| Funds | 13 fund/ETF products (QQQ, VOO, SPY, BND, AGG, etc.); individual securities are transaction/component symbols, not funds |
 | Fund Targeting | Per-investor visibility rules |
 | Fund Flows | 11 (deposits, withdrawals, ops-managed) |
-| Investment Transactions | 7 (buy/sell AAPL, MSFT, NVDA, TSLA, AMZN) |
+| Investment Transactions | 4 seeded normalized buy/sell examples (AAPL, MSFT, AMZN) |
 | Portfolio Holdings | 5 daily snapshots |
 | Fund Investments | 4 (VOO, QQQ, SPY, BND) |
 | Orders | 5 Alpaca orders |

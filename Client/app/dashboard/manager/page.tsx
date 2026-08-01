@@ -35,7 +35,9 @@ export default function ManagerDashboard() {
 
   const activeFunds = funds.filter((f) => f.is_active);
   const activeInvestors = investors.filter((i) => i.is_active);
-  const totalAUM = investors.reduce((sum, i) => sum + (i.total_in_funds || 0) + (i.total_in_stocks || 0) + (i.total_wallet || 0), 0);
+  // Fund holdings are the investor-facing value. Underlying securities are the
+  // composition of those funds, so adding them again would double-count AUM.
+  const totalAUM = investors.reduce((sum, i) => sum + (i.total_in_funds || 0), 0);
 
   const fmt = (n: number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
@@ -99,8 +101,8 @@ export default function ManagerDashboard() {
                     <tr className="border-b border-fundinv-border">
                       <th className="text-left py-2.5 px-6 font-medium text-fundinv-muted">Investor</th>
                       <th className="text-left py-2.5 px-2 font-medium text-fundinv-muted">Status</th>
-                      <th className="text-right py-2.5 px-2 font-medium text-fundinv-muted">Wallet</th>
-                      <th className="text-right py-2.5 px-6 font-medium text-fundinv-muted">Portfolio</th>
+                      <th className="text-right py-2.5 px-2 font-medium text-fundinv-muted">Fund Value</th>
+                      <th className="text-right py-2.5 px-6 font-medium text-fundinv-muted">Underlying Exposure</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -117,8 +119,8 @@ export default function ManagerDashboard() {
                             {inv.is_active ? 'Active' : 'Inactive'}
                           </span>
                         </td>
-                        <td className="py-2.5 px-2 text-right text-fundinv-primary">{fmt(inv.total_wallet || 0)}</td>
-                        <td className="py-2.5 px-6 text-right text-fundinv-primary">{fmt((inv.total_in_funds || 0) + (inv.total_in_stocks || 0))}</td>
+                        <td className="py-2.5 px-2 text-right text-fundinv-primary">{fmt(inv.total_in_funds || 0)}</td>
+                        <td className="py-2.5 px-6 text-right text-fundinv-muted">{fmt(inv.total_in_stocks || 0)}</td>
                       </tr>
                     ))}
                   </tbody>

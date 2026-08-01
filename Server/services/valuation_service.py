@@ -1,0 +1,224 @@
+"""Challenge-aligned Manager preview/finalisation for open-ended funds."""
+
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
+
+from sqlalchemy.orm import Session
+
+from models import Fund, FundBalanceEntry, FundPosition, FundValuation, PortfolioHolding
+
+
+MONEY = Decimal("0.0001")
+UNITS = Decimal("0.0000000001")
+NAV = Decimal("0.00000001")
+PCT = Decimal("0.00000001")
+
+
+def dec(value) -> Decimal:
+    return Decimal(str(value or 0))
+
+
+def _day_bounds(value: date) -> tuple[datetime, datetime]:
+    start = datetime.combine(value, time.min, tzinfo=timezone.utc)
+    return start, start + timedelta(days=1)
+
+
+def _previous_valuation(db: Session, fund_id: int, valuation_date: date) -> FundValuation | None:
+    return (
+        db.query(FundValuation)
+        .filter(FundValuation.fund_id == fund_id, FundValuation.valuation_date < valuation_date)
+        .order_by(FundValuation.valuation_date.desc(), FundValuation.id.desc())
+        .first()
+    )
+
+
+def preview_valuation(db: Session, fund: Fund, valuation_date: date, daily_pnl: Decimal) -> dict:
+    existing = db.query(FundValuation).filter_by(
+        fund_id=fund.id, valuation_date=valuation_date
+    ).first()
+    if existing and existing.status == "finalized" and existing.source == "manager_entry":
+        raise ValueError("This fund and date already have a finalized valuation")
+
+    previous = _previous_valuation(db, fund.id, valuation_date)
+    positions = db.query(FundPosition).filter(FundPosition.fund_id == fund.id).all()
+    tracked_units = sum((dec(position.units) for position in positions), Decimal("0"))
+    opening_units = dec(previous.units_outstanding) if previous else tracked_units
+    opening_nav = dec(previous.nav_per_unit) if previous else dec(fund.current_price or 1)
+    opening_assets = dec(previous.closing_assets) if previous else opening_units * opening_nav
+    if opening_units <= 0 or opening_assets <= 0:
+        raise ValueError("The fund needs positive opening units and assets before valuation")
+
+    start, end = _day_bounds(valuation_date)
+    same_day_entries = db.query(FundBalanceEntry).filter(
+        FundBalanceEntry.fund_id == fund.id,
+        FundBalanceEntry.created_at >= start,
+        FundBalanceEntry.created_at < end,
+    ).all()
+    if same_day_entries:
+        raise ValueError("Finalize daily P&L before Operations settles subscriptions or redemptions for that date")
+
+    daily_pnl = dec(daily_pnl).quantize(MONEY, rounding=ROUND_HALF_UP)
+    closing_before_flows = opening_assets + daily_pnl
+    if closing_before_flows <= 0:
+        raise ValueError("Daily P&L would reduce fund assets to zero or below")
+    nav = (closing_before_flows / opening_units).quantize(NAV, rounding=ROUND_HALF_UP)
+
+    allocation_by_investor: dict[int, dict] = {}
+    allocated_total = Decimal("0")
+    for position in positions:
+        units = dec(position.units)
+        row = allocation_by_investor.setdefault(position.investor_id, {
+            "investor_id": position.investor_id,
+            "investment_account_ids": [],
+            "units": Decimal("0"),
+        })
+        row["investment_account_ids"].append(position.investment_account_id)
+        row["units"] += units
+
+    allocations = []
+    for row in allocation_by_investor.values():
+        units = row["units"]
+        share = units / opening_units if opening_units else Decimal("0")
+        allocated = (daily_pnl * share).quantize(MONEY, rounding=ROUND_HALF_UP)
+        allocated_total += allocated
+        allocations.append({
+            "investor_id": row["investor_id"],
+            "investment_account_ids": row["investment_account_ids"],
+            "units": float(units),
+            "opening_share_pct": float((share * 100).quantize(PCT)),
+            "allocated_pnl": float(allocated),
+            "opening_value": float((units * opening_nav).quantize(MONEY)),
+            "closing_value_before_flows": float((units * nav).quantize(MONEY)),
+        })
+
+    return {
+        "fund_id": fund.id,
+        "fund_name": fund.name,
+        "valuation_date": valuation_date.isoformat(),
+        "previous_valuation_date": previous.valuation_date.isoformat() if previous else None,
+        "opening_assets": float(opening_assets.quantize(MONEY)),
+        "opening_units": float(opening_units.quantize(UNITS)),
+        "opening_nav_per_unit": float(opening_nav.quantize(NAV)),
+        "daily_pnl": float(daily_pnl),
+        "closing_assets_before_flows": float(closing_before_flows.quantize(MONEY)),
+        "net_flow": 0.0,
+        "closing_assets": float(closing_before_flows.quantize(MONEY)),
+        "closing_units": float(opening_units.quantize(UNITS)),
+        "nav_per_unit": float(nav),
+        "allocated_pnl_total": float(allocated_total),
+        "external_ownership_pnl": float(daily_pnl - allocated_total),
+        "allocations": allocations,
+    }
+
+
+def finalize_valuation(db: Session, fund: Fund, valuation_date: date, daily_pnl: Decimal, user_id: int, notes: str | None = None) -> tuple[FundValuation, dict]:
+    preview = preview_valuation(db, fund, valuation_date, daily_pnl)
+    valuation = db.query(FundValuation).filter_by(
+        fund_id=fund.id, valuation_date=valuation_date
+    ).first()
+    if valuation is None:
+        valuation = FundValuation(fund_id=fund.id, valuation_date=valuation_date)
+        db.add(valuation)
+    valuation.opening_assets = dec(preview["opening_assets"])
+    valuation.daily_pnl = dec(preview["daily_pnl"])
+    valuation.closing_assets_before_flows = dec(preview["closing_assets_before_flows"])
+    valuation.net_flow = Decimal("0")
+    valuation.closing_assets = dec(preview["closing_assets"])
+    valuation.units_outstanding = dec(preview["closing_units"])
+    valuation.nav_per_unit = dec(preview["nav_per_unit"])
+    valuation.status = "finalized"
+    valuation.source = "manager_entry"
+    valuation.finalized_by_user_id = user_id
+    valuation.finalized_at = datetime.now(timezone.utc)
+    valuation.notes = notes
+    fund.current_price = dec(preview["nav_per_unit"])
+
+    as_of = datetime.combine(valuation_date, time(hour=22), tzinfo=timezone.utc)
+    db.query(PortfolioHolding).filter(
+        PortfolioHolding.fund_id == fund.id,
+        PortfolioHolding.snapshot_date == valuation_date,
+    ).delete(synchronize_session=False)
+    for allocation in preview["allocations"]:
+        holding = PortfolioHolding(
+            investor_id=allocation["investor_id"],
+            fund_id=fund.id,
+            holding_date=as_of,
+            snapshot_date=valuation_date,
+            account_value=allocation["closing_value_before_flows"],
+            shareholding_pct=allocation["opening_share_pct"],
+            daily_pnl=allocation["allocated_pnl"],
+            fund_nav=preview["closing_assets"],
+            units=allocation["units"],
+            nav_per_unit=preview["nav_per_unit"],
+            opening_value=allocation["opening_value"],
+            opening_shareholding_pct=allocation["opening_share_pct"],
+            closing_value_before_flows=allocation["closing_value_before_flows"],
+            net_flow=0,
+        )
+        db.add(holding)
+    db.flush()
+    return valuation, preview
+
+
+def append_settled_flow_to_finalized_valuation(db: Session, entry: FundBalanceEntry) -> None:
+    """Append post-P&L cash/unit effects without rewriting finalized P&L or NAV."""
+    entry_date = entry.created_at.date() if entry.created_at else datetime.now(timezone.utc).date()
+    valuation = db.query(FundValuation).filter_by(
+        fund_id=entry.fund_id, valuation_date=entry_date, status="finalized"
+    ).with_for_update().first()
+    if valuation is None:
+        return
+    if abs(dec(entry.nav_per_unit) - dec(valuation.nav_per_unit)) > Decimal("0.00000001"):
+        raise ValueError("Settled flow NAV does not match the finalized daily NAV")
+    valuation.net_flow = dec(valuation.net_flow) + dec(entry.amount)
+    valuation.closing_assets = dec(valuation.closing_assets_before_flows) + dec(valuation.net_flow)
+    valuation.units_outstanding = dec(valuation.units_outstanding) + dec(entry.units)
+
+    position = db.query(FundPosition).filter_by(
+        investment_account_id=entry.investment_account_id, fund_id=entry.fund_id
+    ).one()
+    holding = db.query(PortfolioHolding).filter_by(
+        investor_id=position.investor_id,
+        fund_id=entry.fund_id,
+        snapshot_date=entry_date,
+    ).with_for_update().first()
+    if holding is None:
+        holding = PortfolioHolding(
+            investor_id=position.investor_id,
+            fund_id=entry.fund_id,
+            holding_date=datetime.combine(entry_date, time(hour=22), tzinfo=timezone.utc),
+            snapshot_date=entry_date,
+            account_value=0,
+            shareholding_pct=0,
+            daily_pnl=0,
+            fund_nav=valuation.closing_assets_before_flows,
+            units=0,
+            nav_per_unit=valuation.nav_per_unit,
+            opening_value=0,
+            opening_shareholding_pct=0,
+            closing_value_before_flows=0,
+            net_flow=0,
+        )
+        db.add(holding)
+    holding.net_flow = dec(holding.net_flow) + dec(entry.amount)
+    db.flush()
+
+    # A settled flow changes closing ownership for every Investor, even though
+    # only the affected Investor receives a net-flow amount on this ledger row.
+    holdings = db.query(PortfolioHolding).filter_by(
+        fund_id=entry.fund_id, snapshot_date=entry_date
+    ).with_for_update().all()
+    for daily_holding in holdings:
+        investor_units = sum((
+            dec(row.units) for row in db.query(FundPosition).filter_by(
+                investor_id=daily_holding.investor_id, fund_id=entry.fund_id
+            ).all()
+        ), Decimal("0"))
+        daily_holding.units = investor_units
+        daily_holding.account_value = investor_units * dec(valuation.nav_per_unit)
+        daily_holding.shareholding_pct = (
+            investor_units / dec(valuation.units_outstanding) * Decimal("100")
+            if dec(valuation.units_outstanding) > 0 else Decimal("0")
+        )
+        daily_holding.fund_nav = valuation.closing_assets

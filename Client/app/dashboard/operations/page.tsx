@@ -17,7 +17,7 @@ function OperationsDashboardContent() {
     <div className="max-w-6xl mx-auto px-8 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-fundinv-primary">Operations Console</h1>
-        <p className="text-sm text-fundinv-muted mt-1">Review funds, payments, payouts, and investor feedback</p>
+        <p className="text-sm text-fundinv-muted mt-1">Review fund subscriptions, redemptions, and verified cash movements</p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 mb-6">
@@ -31,7 +31,7 @@ function OperationsDashboardContent() {
               </div>
               <div>
                 <p className="text-sm font-medium text-fundinv-primary">Fund Flows</p>
-                <p className="text-xs text-fundinv-muted">Review and process deposit/withdrawal requests</p>
+                <p className="text-xs text-fundinv-muted">Review and process subscription/redemption requests</p>
               </div>
             </div>
             <a
@@ -56,15 +56,15 @@ function OperationsDashboardContent() {
           <div className="flex items-start gap-3">
             <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">2</div>
             <div>
-              <p className="text-sm font-medium text-fundinv-primary">Approve and send the provider link</p>
-              <p className="text-xs text-fundinv-muted">Deposits receive a Stripe Checkout link. Withdrawals receive Stripe Connect payout setup when required.</p>
+              <p className="text-sm font-medium text-fundinv-primary">Review the fund-flow request</p>
+              <p className="text-xs text-fundinv-muted">For demo PayNow subscriptions, compare the requested and received amounts. Manual transfers retain a separate approval step.</p>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">3</div>
             <div>
-              <p className="text-sm font-medium text-fundinv-primary">Wait for provider confirmation</p>
-              <p className="text-xs text-fundinv-muted">Only Stripe payment or payout webhooks settle balances. Failed operations remain failed and available for retry.</p>
+              <p className="text-sm font-medium text-fundinv-primary">Verify settlement, then complete</p>
+              <p className="text-xs text-fundinv-muted">Use Verify & Complete once for a matching demo PayNow receipt. In manual mode, complete only after independently verifying the bank movement. Units change only at this point.</p>
             </div>
           </div>
         </div>

@@ -12,6 +12,7 @@ const routes = {
     '/dashboard/investor',
     '/dashboard/investor/funds',
     '/dashboard/investor/fund-flows',
+    '/dashboard/investor/valuations',
     '/dashboard/investor/articles',
     '/dashboard/investor/feedback',
     '/dashboard/security',
@@ -20,6 +21,7 @@ const routes = {
     '/dashboard/manager',
     '/dashboard/manager/funds',
     '/dashboard/manager/performance',
+    '/dashboard/manager/valuations',
     '/dashboard/manager/transactions',
     '/dashboard/manager/articles',
     '/dashboard/security',
@@ -37,6 +39,7 @@ const routes = {
     '/dashboard/admin',
     '/dashboard/admin/audit-logs',
     '/dashboard/admin/fund-flows',
+    '/dashboard/admin/valuations',
     '/dashboard/admin/transactions',
     '/dashboard/admin/users',
     '/dashboard/admin/investors',
@@ -61,7 +64,7 @@ for (const role of Object.keys(users) as Array<keyof typeof users>) {
     page.on('response', (response) => {
       if (response.status() >= 500) failures.push(`${response.status()} ${response.url()}`);
     });
-    await login(page, ...users[role]);
+    await login(page, users[role][0], users[role][1]);
     for (const route of routes[role]) {
       const response = await page.goto(route);
       expect(response?.status(), route).toBeLessThan(500);

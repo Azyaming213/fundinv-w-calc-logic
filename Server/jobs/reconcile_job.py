@@ -2,7 +2,8 @@ from sqlalchemy.orm import Session
 
 from database import SessionLocal
 from models import Order, FundFlow
-from services.alpaca_service import get_orders
+from services.alpaca_service import get_order, get_orders
+from services.order_accounting_service import apply_filled_order
 from config import settings
 import stripe as stripe_lib
 
@@ -25,6 +26,14 @@ def run_daily_reconciliation():
                 extra = set(alpaca_order_ids) - set(db_order_ids)
                 if extra:
                     discrepancies.append(f"orders-in-alpaca-not-db: {len(extra)}")
+
+                for order in db_orders:
+                    if not order.alpaca_order_id or order.accounting_recorded_at is not None:
+                        continue
+                    provider_order = get_order(order.alpaca_order_id)
+                    if provider_order:
+                        apply_filled_order(db, order, provider_order)
+                db.commit()
             except Exception as e:
                 discrepancies.append(f"alpaca-error: {str(e)}")
 

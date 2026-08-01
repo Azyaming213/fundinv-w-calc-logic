@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -22,6 +23,8 @@ from services.alpaca_service import (
 )
 from services.audit_service import log_event, AUDIT_ACTIONS
 from services.fund_accounting_service import current_nav_per_unit
+from services.paynow_demo_service import build_paynow_demo_payload, paynow_qr_data_url
+from config import settings
 import appconstants as AppConstants
 
 router = APIRouter(prefix="/api/funds", tags=["Funds"])
@@ -45,6 +48,10 @@ def list_funds(
     investor = None
 
     if current_user.role and current_user.role.name == "investor":
+        # Investors subscribe to fund products. Individual stocks are
+        # underlying instruments managed by portfolio managers, not products
+        # that an investor can trade directly from the client portal.
+        query = query.filter(Fund.fund_type.in_(["etf", "bond", "managed", "mutual_fund", "hedge_fund"]))
         investor = db.query(Investor).filter(Investor.email == current_user.email).first()
         if investor:
             query = query.join(FundTargeting, FundTargeting.fund_id == Fund.id)\
@@ -562,109 +569,143 @@ def update_fund(
     return {"success": True, "data": {"id": fund.id, "name": fund.name, "ticker": fund.ticker, "is_active": fund.is_active}, "error": None}
 
 
-@router.post("/invest", response_model=InvestResponse)
-def invest_fund(
-    request: InvestRequest,
-    db: Session = Depends(get_db),
-    current_user=Depends(require_claim(AppConstants.CLAIMS["readFunds"])),
-):
-    fund = db.query(Fund).filter(Fund.id == request.fund_id).first()
+def _create_subscription_request(
+    *, db: Session, current_user, fund_id: int, amount: float, investment_account_id: int
+) -> FundFlow:
+    """Create the single authoritative investor subscription workflow."""
+    fund = db.query(Fund).filter(
+        Fund.id == fund_id,
+        Fund.is_active == True,
+        Fund.review_status == "approved",
+        Fund.fund_type.in_(["etf", "bond", "managed", "mutual_fund", "hedge_fund"]),
+    ).first()
     if not fund:
-        raise HTTPException(status_code=404, detail="Fund not found")
-    if not fund.is_active or fund.review_status != "approved":
-        raise HTTPException(status_code=400, detail="Fund is not approved for investment")
+        raise HTTPException(status_code=404, detail="Fund product not found or not approved")
 
     investor = db.query(Investor).filter(Investor.email == current_user.email).first()
     if not investor:
         raise HTTPException(status_code=404, detail="Investor profile not found")
-
-    if current_user.role and current_user.role.name == "investor":
-        targeting = db.query(FundTargeting).filter(
-            FundTargeting.investor_id == investor.id,
-            FundTargeting.fund_id == request.fund_id,
-            FundTargeting.is_visible == True
-        ).first()
-        if not targeting:
-            raise HTTPException(status_code=404, detail="Fund not found")
-
-    account = (
-        db.query(InvestmentAccount)
-        .filter(
-            InvestmentAccount.id == request.investment_account_id,
-            InvestmentAccount.investor_id == investor.id,
-            InvestmentAccount.deleted_at.is_(None),
-        )
-        .with_for_update()
-        .first()
-    )
+    account = db.query(InvestmentAccount).filter(
+        InvestmentAccount.id == investment_account_id,
+        InvestmentAccount.investor_id == investor.id,
+        InvestmentAccount.deleted_at.is_(None),
+    ).with_for_update().first()
     if not account:
         raise HTTPException(status_code=404, detail="Investment account not found")
+    targeting = db.query(FundTargeting).filter(
+        FundTargeting.investor_id == investor.id,
+        FundTargeting.fund_id == fund.id,
+        FundTargeting.is_visible == True,
+    ).first()
+    if not targeting:
+        raise HTTPException(status_code=404, detail="Fund is not available to this investor")
 
-    from sqlalchemy.orm.attributes import flag_modified
-
-    invest_status = "pending_ops_team"
-    flow_status = "pending_ops_team"
-
-    mfb = dict(account.manager_fund_balance or {})
-    unallocated = float(mfb.get("_unallocated", 0))
-    if unallocated < request.amount:
+    requested_amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if requested_amount <= 0:
+        raise HTTPException(status_code=400, detail="Subscription amount must be greater than zero")
+    if requested_amount > Decimal(str(settings.MAX_SUBSCRIPTION_AMOUNT)):
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient available balance. Available: ${unallocated:,.2f}, requested: ${request.amount:,.2f}. "
-                   f"Please top up your account first.",
+            detail=f"Subscription amount cannot exceed ${settings.MAX_SUBSCRIPTION_AMOUNT:,.2f}",
         )
 
-    mfb["_unallocated"] = unallocated - request.amount
-    account.manager_fund_balance = mfb
-    flag_modified(account, "manager_fund_balance")
+    provider_mode = settings.FUND_FLOW_PROVIDER.strip().lower()
+    if provider_mode not in {"paynow_demo", "manual", "stripe"}:
+        raise HTTPException(
+            status_code=500,
+            detail="FUND_FLOW_PROVIDER must be 'paynow_demo', 'manual', or 'stripe'",
+        )
 
-    investment = FundInvestment(
-        investor_id=investor.id,
-        fund_id=fund.id,
-        amount=request.amount,
-        status=invest_status,
-    )
-    db.add(investment)
+    request_id = f"REQ-DEP-{uuid.uuid4().hex[:12].upper()}"
+    payment_payload = None
+    initial_status = "pending_ops_team"
+    provider = None
+    provider_reference = None
+    if provider_mode == "paynow_demo":
+        initial_status = "awaiting_investor_payment"
+        provider = "paynow_demo"
+        provider_reference = f"PAYNOW-DEMO-{request_id}"
+        payment_payload = build_paynow_demo_payload(
+            request_id=request_id,
+            amount=requested_amount,
+            currency=account.currency,
+            fund_name=fund.name,
+            recipient_name=settings.PAYNOW_DEMO_RECIPIENT_NAME,
+            recipient_uen=settings.PAYNOW_DEMO_UEN,
+        )
 
     flow = FundFlow(
         investor_id=investor.id,
         investment_account_id=account.id,
-        flow_type="investment",
-        amount=request.amount,
+        fund_id=fund.id,
+        flow_type="deposit",
+        amount=requested_amount,
         currency=account.currency,
-        status=flow_status,
-        request_id=f"fund_invest_{fund.id}_{investor.id}_{int(request.amount)}_{uuid.uuid4().hex[:8]}",
+        status=initial_status,
+        request_id=request_id,
+        notes=f"Subscription to fund: {fund.name}",
+        provider=provider,
+        provider_reference=provider_reference,
+        payment_url=payment_payload,
     )
     db.add(flow)
-
     db.commit()
-    db.refresh(investment)
-
+    db.refresh(flow)
     log_event(
         db=db,
         user_id=current_user.id,
-        action=AUDIT_ACTIONS["FUND_INVESTED"],
-        details=f"Investor {investor.email} invested ${request.amount:,.2f} in {fund.name}",
-        entity_type="fund_investment",
-        entity_id=investment.id,
-        changes={"fund_id": fund.id, "fund_name": fund.name, "amount": request.amount, "investor_id": investor.id},
+        action=AUDIT_ACTIONS["FUND_FLOW_DEPOSIT_REQUESTED"],
+        details=f"Subscription request ${requested_amount:,.2f} into {fund.name} by {current_user.email}",
+        entity_type="fund_flow",
+        entity_id=flow.id,
+        changes={"fund_id": fund.id, "fund_name": fund.name, "amount": float(requested_amount), "status": flow.status, "provider": provider},
         status="success",
     )
+    return flow
 
-    is_managed = fund.fund_type == "managed"
 
-    return InvestResponse(
-        success=True,
-        data={
-            "investment_id": investment.id,
-            "fund_id": fund.id,
-            "fund_name": fund.name,
-            "amount": request.amount,
-            "status": invest_status,
-            "message": f"${request.amount:,.2f} allocated to {fund.name}. Your fund manager will invest this for you." if is_managed else f"${request.amount:,.2f} investment request for {fund.name} submitted. Your fund manager will review and execute.",
-        },
-        error=None,
+def _subscription_response_data(flow: FundFlow) -> dict:
+    data = {
+        "id": flow.id,
+        "request_id": flow.request_id,
+        "fund_id": flow.fund_id,
+        "fund_name": flow.fund.name,
+        "amount": float(flow.amount),
+        "currency": flow.currency,
+        "status": flow.status,
+        "provider": flow.provider,
+        "payment_payload": flow.payment_url if flow.provider == "paynow_demo" else None,
+        "paynow_qr_data_url": (
+            paynow_qr_data_url(flow.payment_url)
+            if flow.provider == "paynow_demo" and flow.payment_url else None
+        ),
+    }
+    return data
+
+
+@router.post("/invest", response_model=InvestResponse)
+def invest_fund(
+    request: InvestRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_claim(AppConstants.CLAIMS["depositToFunds"])),
+):
+    """Compatibility alias: investing in a fund is a subscription request."""
+    flow = _create_subscription_request(
+        db=db,
+        current_user=current_user,
+        fund_id=request.fund_id,
+        amount=request.amount,
+        investment_account_id=request.investment_account_id,
     )
+    data = _subscription_response_data(flow)
+    data["investment_id"] = flow.id
+    data["message"] = (
+        "Scan the fixed-amount demo PayNow QR and confirm the simulated payment. "
+        "Units are issued only after Operations verifies the matching receipt."
+        if flow.provider == "paynow_demo"
+        else "Subscription submitted. Operations must approve it and verify receipt before units are issued."
+    )
+    return InvestResponse(success=True, data=data, error=None)
 
 
 @router.post("/deposit")
@@ -675,80 +716,91 @@ def request_fund_deposit(
     db: Session = Depends(get_db),
     current_user=Depends(require_claim(AppConstants.CLAIMS["depositToFunds"])),
 ):
-    fund = db.query(Fund).filter(
-        Fund.id == fund_id,
-        Fund.is_active == True,
-        Fund.review_status == "approved",
-    ).first()
-    if not fund:
-        raise HTTPException(status_code=404, detail="Fund not found or not approved")
-    fund_name = fund.name
+    flow = _create_subscription_request(
+        db=db, current_user=current_user, fund_id=fund_id,
+        amount=amount, investment_account_id=investment_account_id,
+    )
 
+    data = _subscription_response_data(flow)
+    data["message"] = (
+        f"Demo PayNow QR created for ${float(flow.amount):,.2f}. The QR amount is fixed and cannot be edited."
+        if flow.provider == "paynow_demo"
+        else f"Subscription request for ${float(flow.amount):,.2f} into {flow.fund.name} submitted. Operations will review and verify receipt before issuing units."
+    )
+    return {
+        "success": True,
+        "data": data,
+        "error": None,
+    }
+
+
+@router.post("/fund-flows/{flow_id}/simulate-paynow")
+def simulate_paynow_payment(
+    flow_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_claim(AppConstants.CLAIMS["depositToFunds"])),
+):
+    """Simulate a provider callback; the browser cannot supply or alter the paid amount."""
     investor = db.query(Investor).filter(Investor.email == current_user.email).first()
     if not investor:
         raise HTTPException(status_code=404, detail="Investor profile not found")
+    flow = db.query(FundFlow).filter(
+        FundFlow.id == flow_id,
+        FundFlow.investor_id == investor.id,
+        FundFlow.flow_type == "deposit",
+    ).with_for_update().first()
+    if not flow:
+        raise HTTPException(status_code=404, detail="Subscription request not found")
+    if flow.provider != "paynow_demo":
+        raise HTTPException(status_code=400, detail="This subscription does not use demo PayNow")
+    if flow.paid_amount is not None:
+        return {
+            "success": True,
+            "data": {
+                "id": flow.id,
+                "status": flow.status,
+                "requested_amount": float(flow.amount),
+                "paid_amount": float(flow.paid_amount),
+                "payment_received_at": flow.payment_received_at.isoformat() if flow.payment_received_at else None,
+                "message": "Demo payment was already recorded.",
+            },
+            "error": None,
+        }
+    if flow.status != "awaiting_investor_payment":
+        raise HTTPException(status_code=409, detail=f"Cannot pay a subscription with status '{flow.status}'")
 
-    account = (
-        db.query(InvestmentAccount)
-        .filter(
-            InvestmentAccount.id == investment_account_id,
-            InvestmentAccount.investor_id == investor.id,
-            InvestmentAccount.deleted_at.is_(None),
-        )
-        .with_for_update()
-        .first()
-    )
-    if not account:
-        raise HTTPException(status_code=404, detail="Investment account not found")
-
-    targeting = db.query(FundTargeting).filter(
-        FundTargeting.investor_id == investor.id,
-        FundTargeting.fund_id == fund_id,
-        FundTargeting.is_visible == True,
-    ).first()
-    if not targeting:
-        raise HTTPException(status_code=404, detail="Fund is not available to this investor")
-
-    request_id = f"REQ-DEP-{uuid.uuid4().hex[:12].upper()}"
-
-    note = f"Deposit to fund: {fund_name}"
-
-    flow = FundFlow(
-        investor_id=investor.id,
-        investment_account_id=account.id,
-        fund_id=fund.id,
-        flow_type="deposit",
-        amount=amount,
-        currency=account.currency,
-        status="pending_ops_team",
-        request_id=request_id,
-        notes=note,
-    )
-    db.add(flow)
-    db.commit()
-    db.refresh(flow)
-
+    # The provider callback copies the immutable requested amount. There is no
+    # client-controlled amount field, preventing accidental over/underpayment.
+    flow.paid_amount = flow.amount
+    flow.payment_received_at = datetime.now(timezone.utc)
+    flow.status = "pending_ops_team"
     log_event(
         db=db,
         user_id=current_user.id,
-        action=AUDIT_ACTIONS["FUND_FLOW_DEPOSIT_REQUESTED"],
-        details=f"Deposit request ${amount:,.2f} into {fund_name} by {current_user.email}",
+        action=AUDIT_ACTIONS["FUND_FLOW_PAYNOW_PAYMENT_RECORDED"],
+        details=f"Demo PayNow receipt ${float(flow.paid_amount):,.2f} recorded for {flow.request_id}",
         entity_type="fund_flow",
         entity_id=flow.id,
-        changes={"fund_id": fund_id, "fund_name": fund_name, "amount": amount, "status": "pending_ops_team"},
+        changes={
+            "requested_amount": float(flow.amount),
+            "paid_amount": float(flow.paid_amount),
+            "status": flow.status,
+            "provider_reference": flow.provider_reference,
+        },
         status="success",
+        commit=False,
     )
-
+    db.commit()
+    db.refresh(flow)
     return {
         "success": True,
         "data": {
             "id": flow.id,
-            "request_id": request_id,
-            "fund_id": fund_id,
-            "fund_name": fund_name,
-            "amount": float(flow.amount),
             "status": flow.status,
-            "message": f"Deposit request for ${amount:,.2f} into {fund_name} submitted. Operations team will review.",
+            "requested_amount": float(flow.amount),
+            "paid_amount": float(flow.paid_amount),
+            "payment_received_at": flow.payment_received_at.isoformat(),
+            "message": "Demo PayNow payment recorded. Operations can now verify and complete the subscription.",
         },
         "error": None,
     }

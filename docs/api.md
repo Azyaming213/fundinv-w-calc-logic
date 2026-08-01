@@ -1,5 +1,9 @@
 # API Reference
 
+> Some legacy wallet/provider endpoints remain for compatibility. For current
+> role boundaries and accounting behavior, use
+> [Authoritative Fund Portal Workflow](./FUND_PORTAL_WORKFLOW.md).
+
 Base URL: `http://localhost:8000`
 
 ## Authentication
@@ -44,8 +48,9 @@ Platform administration. Guards now use claims, not role names.
 | GET | `/stats` | Token | `system_stats:read` | Total/active user counts |
 | GET | `/audit-logs` | Token | `audit_logs:read` | Paginated audit log |
 | GET | `/fund-flows` | Token | `fund_flows:read_all` | List deposit/withdrawal flows. Filters: `search`, `flow_type`, `status` |
-| POST | `/fund-flows/{id}/approve` | Token | `fund_flows:approve` | **Ops only.** Approve flow (creates Stripe session, sends email) |
-| POST | `/fund-flows/{id}/complete` | Token | `fund_flows:complete` | **Ops only.** Complete flow (credits wallet for deposits) |
+| POST | `/fund-flows/{id}/approve` | Token | `fund_flows:approve` | **Ops only.** Approve manual/Stripe flow; demo PayNow deposits use verify-complete |
+| POST | `/fund-flows/{id}/verify-complete` | Token | `fund_flows:complete` | **Ops only.** Atomically verify an exact demo PayNow receipt and issue units once |
+| POST | `/fund-flows/{id}/complete` | Token | `fund_flows:complete` | **Ops only.** Complete a previously approved manual transfer |
 | POST | `/fund-flows/{id}/reject` | Token | `fund_flows:reject` | **Ops only.** Reject flow (refunds wallet for withdrawals) |
 | POST | `/fund-flows/initiate-deposit` | Token | `fund_flows:initiate_deposit` | **Ops only.** Create deposit + Stripe link for investor |
 | GET | `/transactions` | Token | `audit_logs:read` | List all investment transactions |
@@ -78,6 +83,9 @@ Fund and investor management for the manager role.
 | POST | `/fund-assign` | Token | `fund_targeting:write` | Assign investor to fund (optional: invest amount) |
 | GET | `/transactions` | Token | `transactions:read` | List manager's trade orders |
 | GET | `/transactions/export` | Token | `transactions:read` | Export transactions as CSV |
+| POST | `/valuations/preview` | Token | `funds:update` | Preview Manager-entered daily P&L, NAV, and Investor allocations without writing |
+| POST | `/valuations/finalize` | Token | `funds:update` | Finalize a managed fund valuation once with an audit note |
+| GET | `/valuations` | Token | `investors:read_assigned` | List valuations for funds owned by the current Manager |
 
 ---
 
@@ -109,6 +117,7 @@ Personal portfolio management.
 |--------|------|------|---------------|---------|
 | GET | `/chart-data` | Token | `portfolio:read_own` | Historical portfolio value |
 | GET | `/summary` | Token | `portfolio:read_own` | Portfolio overview (value, accounts, fund breakdown) |
+| GET | `/valuation-history` | Token | `portfolio:read_own` | Own daily fund P&L allocation, flows, units, and NAV ledger |
 | POST | `/accounts` | Token | `portfolio:read_own` | Create investment account |
 | PUT | `/accounts/{id}` | Token | `portfolio:read_own` | Update account name/strategy |
 | GET | `/recent-transactions` | Token | `portfolio:read_own` | Last 10 transactions |
@@ -175,8 +184,9 @@ On error:
 
 | Status | Meaning |
 |--------|---------|
+| `awaiting_investor_payment` | Dummy PayNow QR issued; fixed payment not yet simulated |
 | `pending` | Awaiting Stripe payment (top-up or ops-approved deposit) |
-| `pending_ops_team` | Awaiting ops review (investor submitted request) |
+| `pending_ops_team` | Awaiting ops review, including a recorded demo PayNow payment |
 | `pending_fund_transfer` | Ops approved; awaiting fund transfer completion |
 | `completed` | Transfer confirmed; wallet credited (deposit) or sent (withdrawal) |
 | `failed` | Stripe payment expired or transaction failed |

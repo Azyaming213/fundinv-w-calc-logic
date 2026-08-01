@@ -35,7 +35,7 @@ fundinv-solo/
 | `dependencies.py` | FastAPI dependency injection: `get_current_user` (JWT decode), `require_role` (RBAC guard) |
 | `appconstants.py` | Centralized role names, permission claims, helper functions — single source of truth for RBAC |
 | `alembic.ini` | Alembic migration config |
-| `alembic/` | Versioned schema migrations; current head is `v0.4.4_security_reporting` |
+| `alembic/` | Versioned schema migrations; current head is `v0.5.3_fund_catalog_cleanup` |
 | `models/` | SQLAlchemy ORM models across 2 PostgreSQL schemas (`fundinv_auth`, `fundinv`) |
 | `routers/` | 8 FastAPI routers: auth, admin, funds, wallet, portfolio, trading, articles, manager |
 | `services/` | Business logic: auth (bcrypt/JWT), email (yagmail/SMTP), MFA (TOTP), Alpaca API, audit logging |
@@ -63,7 +63,7 @@ fundinv-solo/
 - Python 3.12+
 - Node.js 20+ (or Bun)
 - PostgreSQL 16+ (or Docker)
-- Stripe account (for payments)
+- Stripe test account (optional; fixed-amount demo PayNow is the local default)
 - Alpaca Markets account (paper trading)
 
 ### 1. Environment Setup
@@ -119,7 +119,8 @@ cd Client && npm run dev
 
 For a clean extracted copy, use the platform-specific bootstrap script. Both
 scripts preserve an existing `.env` and existing database, create them only
-when absent, install dependencies, apply migrations, and run basic checks.
+when absent, install dependencies, apply migrations, run backend tests and
+frontend lint, and complete a production frontend build.
 
 ```bash
 # Linux
@@ -127,6 +128,12 @@ bash bin/setup_linux.sh
 
 # Windows (run from Git Bash with Docker Desktop running)
 bash bin/setup_windows_gitbash.sh
+```
+
+After either setup completes, the same command starts the full stack:
+
+```bash
+bash bin/run.sh
 ```
 
 Set `INSTALL_PLAYWRIGHT=1` before the command if the machine also needs the
@@ -155,11 +162,10 @@ source code, tests, configuration SQL, setup scripts, README, and documentation.
 
 ### Investor
 - View portfolio dashboard with charts and P&L tracking
-- Request deposits into a specifically selected approved fund. Operations approval creates a Stripe Checkout payment link; units are issued only after Stripe confirms payment.
-- Request withdrawals from approved manager funds (operations review, Stripe Connect payout)
-- Browse and invest in funds
-- Buy/sell stocks via Alpaca paper trading
-- View stock details with historical charts
+- Request subscriptions into a specifically selected approved fund. The local demo presents a fixed-amount PayNow QR immediately; units are issued only after Operations verifies the recorded receipt.
+- Request redemptions from existing fund-unit holdings. Units are removed only after verified settlement.
+- Browse the approved fund catalogue and review fund performance data
+- View the fund products and underlying holdings made available by fund managers
 - Read financial news articles
 
 ### Manager
@@ -184,8 +190,8 @@ source code, tests, configuration SQL, setup scripts, README, and documentation.
 - Platform reconciliation: DB vs Alpaca vs Stripe
 
 ### Operations
-- Review pending deposit/withdrawal requests
-- Approve or reject requests. Approval is authorization, not settlement: deposits still require investor payment and withdrawals require payout processing.
+- Review pending subscription/redemption requests
+- Verify and complete demo PayNow subscriptions in one action after payment is recorded. Manual transfers retain separate approval and completion steps.
 - Monitor provider-confirmed payment and payout completion
 - Reject requests with reason (refunds wallet on withdrawals)
 - Review and approve/reject manager-created funds
@@ -197,23 +203,22 @@ source code, tests, configuration SQL, setup scripts, README, and documentation.
 
 | Feature | Implementation |
 |---|---|
-| **Stripe Payments** | Checkout Sessions for approved deposits; Connect onboarding and payout webhooks for withdrawals |
+| **Fund-flow provider** | Fixed-amount demo PayNow by default; optional manual verification or Stripe Checkout/Connect with signed webhooks |
 | **Alpaca Trading** | Paper trading API: order placement, position tracking, market snapshots, price bars, asset search |
 | **Email Notifications** | HTML emails via SMTP (yagmail): invite links, fund flow approved/completed/rejected updates |
 | **MFA / 2FA** | TOTP-based (pyotp): setup with QR code, verify on login, optional disable |
-| **PDF Reports** | Portfolio summary export via WeasyPrint (HTML to PDF) |
+| **PDF Reports** | Cross-platform portfolio summary export via ReportLab |
 
 ## Fund-flow lifecycle
 
 Deposits are fund subscriptions, not unallocated wallet top-ups:
 
 1. The investor selects an investment account, an approved fund/ETF, and an amount.
-2. Operations selects **Approve & Request Payment**.
-3. The investor opens **Fund Flows** and selects **Pay now**.
-4. Stripe's signed webhook confirms the payment.
-5. FundInv issues units at the current NAV, updates the normalized position and compatibility balance, records one idempotent settlement-ledger entry, and marks the flow completed.
+2. In default `paynow_demo` mode, FundInv immediately presents a dummy QR containing the exact server-locked amount. The simulation records that same amount as received; the investor cannot type a different paid amount.
+3. Operations sees requested and received amounts together and selects **Verify & Complete** once. A mismatch blocks settlement. Manual mode retains **Approve**, external verification, then **Complete**; Stripe mode relies on a signed webhook.
+4. Only after verified completion does FundInv issue units at the current NAV, update the normalized position and compatibility cache, write one idempotent settlement-ledger entry, and mark the flow completed.
 
-An `approved_pending_payment` request has not changed the investor's balance yet. Only `completed` means units and account value have been updated.
+A provider-pending request has not changed the investor's units. Only `completed` means the verified cash movement and unit change have been recorded.
 
 ## Scheduler safety
 
@@ -243,7 +248,7 @@ The API process should keep `ENABLE_SCHEDULER=false`; the worker registers and r
 | **Trading** | Alpaca Markets Paper Trading API |
 | **Email** | yagmail (SMTP) — HTML templates |
 | **Scheduling** | APScheduler (in-process) |
-| **PDF** | WeasyPrint (HTML → PDF) |
+| **PDF** | ReportLab |
 | **Migrations** | Alembic |
 | **DevOps** | Docker (PostgreSQL container for dev) |
 

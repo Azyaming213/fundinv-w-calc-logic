@@ -12,7 +12,7 @@ from services.pnl_service import process_fund_flows_for_day, snapshot_daily_hold
 from services.audit_service import get_system_user, log_event
 
 
-def run_daily_pnl_snapshot():
+def run_daily_pnl_snapshot(*, raise_on_error: bool = False):
     db: Session = SessionLocal()
     try:
         flows = process_fund_flows_for_day(db)
@@ -36,5 +36,7 @@ def run_daily_pnl_snapshot():
             db.rollback()
         except Exception:
             pass
+        if raise_on_error:
+            raise
     finally:
         db.close()

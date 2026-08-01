@@ -10,7 +10,7 @@ from sqlalchemy import func, or_, update
 from pydantic import BaseModel
 
 from database import get_db
-from models import User, AuditLog, Investor, FundFlow, InvestmentTransaction, Order, Fund, Role, Manager, InvestmentAccount, FundBalanceEntry, InviteRequest, FeedbackTicket, Invite
+from models import User, AuditLog, Investor, FundFlow, FundValuation, InvestmentTransaction, Order, Fund, Role, Manager, InvestmentAccount, FundBalanceEntry, InviteRequest, FeedbackTicket, Invite
 from schemas.auth_schema import StandardResponse
 from schemas.portfolio_schema import FundFlowActionRequest
 from dependencies import get_current_user, require_claim, require_any_claim
@@ -19,6 +19,7 @@ from services.auth_service import hash_password
 from services.audit_service import log_event, AUDIT_ACTIONS, get_system_user
 from services.email_service import send_fund_flow_approved_email, send_fund_flow_completed_email, send_fund_flow_rejected_email, send_invite_email
 from services.fund_accounting_service import settle_fund_flow
+from services.paynow_demo_service import paynow_qr_data_url
 from config import settings
 import appconstants as AppConstants
 
@@ -26,6 +27,37 @@ router = APIRouter(prefix="/api/admin", tags=["Admin"])
 logger = logging.getLogger(__name__)
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
+
+
+@router.get("/valuations", response_model=StandardResponse)
+def list_all_valuations(
+    fund_id: int | None = Query(None),
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["readAuditLogs"])),
+    db: Session = Depends(get_db),
+):
+    query = db.query(FundValuation)
+    if fund_id is not None:
+        query = query.filter(FundValuation.fund_id == fund_id)
+    rows = query.order_by(FundValuation.valuation_date.desc()).limit(200).all()
+    return StandardResponse(success=True, data={"valuations": [{
+        "id": row.id,
+        "fund_id": row.fund_id,
+        "fund_name": row.fund.name,
+        "valuation_date": row.valuation_date.isoformat(),
+        "opening_assets": float(row.opening_assets),
+        "daily_pnl": float(row.daily_pnl),
+        "closing_assets_before_flows": float(row.closing_assets_before_flows),
+        "net_flow": float(row.net_flow),
+        "closing_assets": float(row.closing_assets),
+        "units_outstanding": float(row.units_outstanding),
+        "nav_per_unit": float(row.nav_per_unit),
+        "status": row.status,
+        "source": row.source,
+        "finalized_by_name": row.finalized_by.full_name if row.finalized_by else "System",
+        "finalized_by_email": row.finalized_by.email if row.finalized_by else None,
+        "finalized_at": row.finalized_at.isoformat() if row.finalized_at else None,
+        "notes": row.notes,
+    } for row in rows]}, error=None)
 
 
 # ──────────────────────────────────────────────
@@ -271,6 +303,7 @@ def list_fund_flows(
     )
 
     status_guidance = {
+        "awaiting_investor_payment": ("Demo PayNow payment required", "investor_payment"),
         "pending_ops_team": ("Operations review required", "operations_review"),
         "approved_pending_payment": ("Approved — investor payment required before units are issued", "investor_payment"),
         "awaiting_payout_setup": ("Approved — investor payout setup required", "payout_setup"),
@@ -293,19 +326,28 @@ def list_fund_flows(
             "fund_id": f.fund_id,
             "fund_name": f.fund.name if f.fund else None,
             "amount": float(f.amount) if f.amount else 0,
+            "paid_amount": float(f.paid_amount) if f.paid_amount is not None else None,
             "currency": f.currency,
             "status": f.status,
             "request_id": f.request_id,
             "requested_at": f.requested_at.isoformat() if f.requested_at else None,
             "processed_at": f.processed_at.isoformat() if f.processed_at else None,
+            "payment_received_at": f.payment_received_at.isoformat() if f.payment_received_at else None,
             "processed_by_email": f.processed_by.email if f.processed_by else None,
             "processed_by_name": f.processed_by.full_name if f.processed_by else None,
             "notes": f.notes,
             "status_message": status_message,
             "next_action": next_action,
+            "provider": f.provider,
+            "provider_reference": f.provider_reference,
             # Provider URLs contain flow-specific identifiers. Only the owner
             # receives the link; admins/operations never need it in this list.
             "payment_url": f.payment_url if not owns_read_all else None,
+            "paynow_qr_data_url": (
+                paynow_qr_data_url(f.payment_url)
+                if not owns_read_all and f.provider == "paynow_demo" and f.payment_url
+                and f.status == "awaiting_investor_payment" else None
+            ),
         })
 
     return StandardResponse(
@@ -790,8 +832,23 @@ def approve_fund_flow(
         flow.notes = f"{flow.notes or ''}\n[Ops: {body.notes}]".strip()
 
     checkout_url = None
+    provider_mode = settings.FUND_FLOW_PROVIDER.strip().lower()
+    if provider_mode not in {"paynow_demo", "manual", "stripe"}:
+        raise HTTPException(status_code=500, detail="FUND_FLOW_PROVIDER must be 'paynow_demo', 'manual', or 'stripe'")
 
-    if flow.flow_type == "deposit":
+    if flow.flow_type not in {"deposit", "withdrawal"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported fund flow type '{flow.flow_type}'")
+
+    if provider_mode == "paynow_demo" and flow.flow_type == "deposit":
+        raise HTTPException(
+            status_code=400,
+            detail="Demo PayNow subscriptions must use Verify & Complete after the fixed payment is recorded.",
+        )
+    if provider_mode in {"paynow_demo", "manual"}:
+        flow.provider = "manual_transfer"
+        flow.payment_url = None
+        flow.status = "pending_fund_transfer"
+    elif flow.flow_type == "deposit":
         account = flow.investment_account
 
         try:
@@ -883,7 +940,100 @@ def approve_fund_flow(
             "id": flow.id,
             "status": flow.status,
             "checkout_url": checkout_url,
-            "message": "Approved; investor payment is still required before units are issued." if checkout_url else "Approved; investor payout setup is still required.",
+            "message": (
+                "Approved; Operations must verify the external transfer before completing settlement."
+                if flow.provider == "manual_transfer"
+                else "Approved; investor payment is still required before units are issued."
+                if checkout_url
+                else "Approved; investor payout setup is still required."
+            ),
+        },
+        error=None,
+    )
+
+
+@router.post("/fund-flows/{flow_id}/verify-complete", response_model=StandardResponse)
+def verify_paynow_and_complete(
+    flow_id: int,
+    body: FundFlowActionRequest = FundFlowActionRequest(),
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["completeFundFlows"])),
+    db: Session = Depends(get_db),
+):
+    """Verify an exact fixed-amount demo PayNow receipt and issue units once."""
+    flow = _get_flow(db, flow_id)
+    if flow.provider != "paynow_demo" or flow.flow_type != "deposit":
+        raise HTTPException(status_code=400, detail="This action is only for demo PayNow subscriptions")
+    if flow.status == "completed":
+        return StandardResponse(
+            success=True,
+            data={
+                "id": flow.id,
+                "status": flow.status,
+                "requested_amount": float(flow.amount),
+                "paid_amount": float(flow.paid_amount) if flow.paid_amount is not None else None,
+                "message": "Subscription was already verified and completed.",
+            },
+            error=None,
+        )
+    if flow.status != "pending_ops_team":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot verify a flow with status '{flow.status}'. Payment must be recorded first.",
+        )
+    if flow.paid_amount is None or flow.payment_received_at is None:
+        raise HTTPException(status_code=409, detail="No demo PayNow receipt has been recorded")
+    if flow.paid_amount != flow.amount:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Payment mismatch: requested ${float(flow.amount):,.2f}, "
+                f"received ${float(flow.paid_amount):,.2f}. Settlement is blocked."
+            ),
+        )
+
+    _set_processor(flow, current_user)
+    if body.notes:
+        flow.notes = f"{flow.notes or ''}\n[Ops: {body.notes}]".strip()
+    _settle_flow(db, flow, provider_reference=flow.provider_reference)
+    log_event(
+        db=db,
+        user_id=current_user.id,
+        action=AUDIT_ACTIONS["FUND_FLOW_DEPOSIT_COMPLETED"],
+        details=f"Demo PayNow subscription {flow.id} verified and completed",
+        entity_type="fund_flow",
+        entity_id=flow.id,
+        changes={
+            "requested_amount": float(flow.amount),
+            "paid_amount": float(flow.paid_amount),
+            "provider_reference": flow.provider_reference,
+            "payment_received_at": flow.payment_received_at.isoformat(),
+            "status": "completed",
+        },
+        status="success",
+        commit=False,
+    )
+    db.commit()
+    db.refresh(flow)
+
+    try:
+        send_fund_flow_completed_email(
+            to_email=flow.investor.email,
+            investor_name=flow.investor.full_name,
+            flow_type=flow.flow_type,
+            amount=float(flow.amount),
+            request_id=flow.request_id,
+        )
+    except Exception:
+        logger.exception("Completed-flow email failed for flow %s", flow.id)
+
+    return StandardResponse(
+        success=True,
+        data={
+            "id": flow.id,
+            "status": flow.status,
+            "requested_amount": float(flow.amount),
+            "paid_amount": float(flow.paid_amount),
+            "message": "Payment matched the request; subscription completed and units issued.",
         },
         error=None,
     )
@@ -959,7 +1109,7 @@ def reject_fund_flow(
 ):
     flow = _get_flow(db, flow_id)
 
-    if flow.status not in ("pending_ops_team", "approved_pending_payment", "awaiting_payout_setup", "pending_fund_transfer", "pending"):
+    if flow.status not in ("awaiting_investor_payment", "pending_ops_team", "approved_pending_payment", "awaiting_payout_setup", "pending_fund_transfer", "pending"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot reject a flow with status '{flow.status}'. Must be pending.",

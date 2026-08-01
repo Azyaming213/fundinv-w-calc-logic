@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Image from 'next/image';
 import Card from '../../../components/Card';
 import Button from '../../../components/Button';
 import { api } from '../../../lib/api';
@@ -12,6 +13,8 @@ export default function InvestorFundFlowsPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
+  const [paymentLoading, setPaymentLoading] = useState<number | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   const fetchFlows = useCallback(async (pageNum: number) => {
     setLoading(true);
@@ -41,6 +44,19 @@ export default function InvestorFundFlowsPage() {
     fetchFlows(newPage);
   };
 
+  const simulatePayNow = async (flowId: number) => {
+    setPaymentLoading(flowId);
+    setPaymentError(null);
+    try {
+      await api.post(`/api/funds/fund-flows/${flowId}/simulate-paynow`, {});
+      await fetchFlows(page);
+    } catch (err) {
+      setPaymentError((err as { message?: string }).message || 'Could not record demo PayNow payment');
+    } finally {
+      setPaymentLoading(null);
+    }
+  };
+
   const formatAmount = (amount: number) => {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
   };
@@ -59,6 +75,7 @@ export default function InvestorFundFlowsPage() {
   const statusColor = (s: string) => {
     switch (s) {
       case 'completed': return 'text-fundinv-success bg-emerald-50';
+      case 'awaiting_investor_payment': return 'text-purple-600 bg-purple-50';
       case 'approved_pending_payment': return 'text-blue-600 bg-blue-50';
       case 'awaiting_payout_setup': return 'text-blue-600 bg-blue-50';
       case 'pending_ops_team': return 'text-amber-600 bg-amber-50';
@@ -74,10 +91,11 @@ export default function InvestorFundFlowsPage() {
     <div className="max-w-6xl mx-auto px-8 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-fundinv-primary">Fund Flows</h1>
-        <p className="text-sm text-fundinv-muted mt-1">Track your deposit and withdrawal requests</p>
+        <p className="text-sm text-fundinv-muted mt-1">Track your fund subscription and redemption requests</p>
       </div>
 
       <Card>
+        {paymentError && <div className="mb-4 px-4 py-2.5 bg-red-50 border border-red-200 rounded-md text-sm text-red-700">{paymentError}</div>}
         {loading ? (
           <div className="py-12 text-center text-sm text-fundinv-muted">Loading fund flows...</div>
         ) : flows.length === 0 ? (
@@ -108,11 +126,11 @@ export default function InvestorFundFlowsPage() {
                         <span className={`px-2 py-1 text-xs font-medium rounded capitalize ${
                           flow.flow_type === 'deposit' ? 'text-fundinv-accent bg-blue-50' : 'text-fundinv-warning bg-amber-50'
                         }`}>
-                          {flow.flow_type}
+                          {flow.flow_type === 'deposit' ? 'subscription' : flow.flow_type === 'withdrawal' ? 'redemption' : flow.flow_type}
                         </span>
                       </td>
                       <td className="py-3 px-2 text-sm text-fundinv-primary">
-                        {flow.fund_name || 'Unallocated'}
+                        {flow.fund_name || 'Legacy / unallocated'}
                       </td>
                       <td className="py-3 px-2 text-right font-mono text-fundinv-primary">
                         {formatAmount(flow.amount)}
@@ -123,12 +141,26 @@ export default function InvestorFundFlowsPage() {
                         </span>
                         {flow.status_message && <p className="mt-1 max-w-[220px] text-xs text-fundinv-muted normal-case">{flow.status_message}</p>}
                         {flow.next_action === 'investor_payment' && flow.payment_url && (
-                          <a
-                            href={flow.payment_url}
-                            className="inline-flex mt-2 px-3 py-1.5 rounded-md bg-fundinv-accent text-white text-xs font-medium hover:opacity-90"
-                          >
-                            Pay now
-                          </a>
+                          <div className="mt-2 rounded-md border border-fundinv-border bg-white p-2 text-center">
+                            {flow.paynow_qr_data_url && (
+                              <Image
+                                src={flow.paynow_qr_data_url}
+                                alt={`Demo PayNow QR for ${flow.request_id}`}
+                                width={128}
+                                height={128}
+                                unoptimized
+                                className="mx-auto"
+                              />
+                            )}
+                            <p className="mt-1 text-xs font-medium text-fundinv-primary">Fixed: {formatAmount(flow.amount)}</p>
+                            <Button
+                              onClick={() => simulatePayNow(flow.id)}
+                              disabled={paymentLoading === flow.id}
+                              className="mt-2 px-2 py-1 text-xs"
+                            >
+                              {paymentLoading === flow.id ? 'Recording...' : 'Simulate Payment'}
+                            </Button>
+                          </div>
                         )}
                       </td>
                       <td className="py-3 px-2 text-xs text-fundinv-muted font-mono">{flow.request_id}</td>

@@ -309,6 +309,7 @@ CREATE TABLE fundinv.fund_flows (
     investment_account_id INTEGER REFERENCES fundinv.investment_accounts(id),
     flow_type VARCHAR(20) NOT NULL CHECK (flow_type IN ('deposit', 'withdrawal', 'investment')),
     amount NUMERIC(18,4) NOT NULL CHECK (amount > 0),
+    paid_amount NUMERIC(18,4),
     currency VARCHAR(3) NOT NULL DEFAULT 'USD' CHECK (currency ~ '^[A-Z]{3}$'),
     status VARCHAR(30) NOT NULL DEFAULT 'pending',
     request_id VARCHAR(100) UNIQUE NOT NULL,
@@ -320,6 +321,7 @@ CREATE TABLE fundinv.fund_flows (
     ,provider VARCHAR(30)
     ,provider_reference VARCHAR(255) UNIQUE
     ,payment_url VARCHAR(2000)
+    ,payment_received_at TIMESTAMP WITH TIME ZONE
     ,failure_reason VARCHAR(1000)
 );
 

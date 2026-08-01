@@ -8,7 +8,7 @@ WORKDIR /app
 COPY Client/package.json Client/package-lock.json ./
 RUN npm ci
 COPY Client/ .
-RUN npm run build
+RUN NODE_OPTIONS=--max-old-space-size=2048 npm run build -- --webpack
 
 FROM node:20-alpine AS runner
 WORKDIR /app

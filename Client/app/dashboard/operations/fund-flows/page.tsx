@@ -91,6 +91,7 @@ export default function OperationsFundFlowsPage() {
     switch (s) {
       case 'completed': return 'text-fundinv-success bg-emerald-50';
       case 'pending_ops_team': return 'text-amber-600 bg-amber-50';
+      case 'awaiting_investor_payment': return 'text-purple-600 bg-purple-50';
       case 'pending_fund_transfer': return 'text-blue-600 bg-blue-50';
       case 'pending': return 'text-amber-600 bg-amber-50';
       case 'approved_pending_payment': return 'text-blue-600 bg-blue-50';
@@ -101,16 +102,22 @@ export default function OperationsFundFlowsPage() {
     }
   };
 
-  const canApprove = (s: string) => s === 'pending_ops_team';
+  const canApprove = (flow: FundFlowEntry) => flow.status === 'pending_ops_team' && flow.provider !== 'paynow_demo';
+  const canVerifyPayNow = (flow: FundFlowEntry) => (
+    flow.status === 'pending_ops_team' &&
+    flow.provider === 'paynow_demo' &&
+    flow.paid_amount !== null &&
+    flow.paid_amount !== undefined
+  );
   const canComplete = (s: string) => s === 'pending_fund_transfer';
-  const canReject = (s: string) => ['pending_ops_team', 'pending_fund_transfer', 'approved_pending_payment', 'awaiting_payout_setup', 'pending'].includes(s);
+  const canReject = (s: string) => ['awaiting_investor_payment', 'pending_ops_team', 'pending_fund_transfer', 'approved_pending_payment', 'awaiting_payout_setup', 'pending'].includes(s);
 
   return (
     <div className="max-w-6xl mx-auto px-8 py-8">
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-fundinv-primary">Fund Flows</h1>
-          <p className="text-sm text-fundinv-muted mt-1">Review and process deposit/withdrawal requests from investors</p>
+          <p className="text-sm text-fundinv-muted mt-1">Review and process investor fund subscriptions and redemptions</p>
         </div>
       </div>
 
@@ -134,8 +141,8 @@ export default function OperationsFundFlowsPage() {
               className="px-3 py-2 text-sm border border-fundinv-border rounded-md text-fundinv-primary bg-white focus:outline-none focus:ring-2 focus:ring-fundinv-accent"
             >
               <option value="">All Types</option>
-              <option value="deposit">Deposit</option>
-              <option value="withdrawal">Withdrawal</option>
+              <option value="deposit">Subscription</option>
+              <option value="withdrawal">Redemption</option>
             </select>
 
             <select
@@ -144,6 +151,7 @@ export default function OperationsFundFlowsPage() {
               className="px-3 py-2 text-sm border border-fundinv-border rounded-md text-fundinv-primary bg-white focus:outline-none focus:ring-2 focus:ring-fundinv-accent"
             >
               <option value="">All Status</option>
+              <option value="awaiting_investor_payment">Awaiting Investor Payment</option>
               <option value="pending_ops_team">Pending Ops Team</option>
                <option value="approved_pending_payment">Pending Payment</option>
                <option value="awaiting_payout_setup">Payout Setup Required</option>
@@ -174,7 +182,8 @@ export default function OperationsFundFlowsPage() {
                     <th className="text-left py-3 px-6 font-medium text-fundinv-muted">Investor</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Type</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Fund</th>
-                    <th className="text-right py-3 px-2 font-medium text-fundinv-muted">Amount</th>
+                    <th className="text-right py-3 px-2 font-medium text-fundinv-muted">Requested</th>
+                    <th className="text-right py-3 px-2 font-medium text-fundinv-muted">Received</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Status</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Request ID</th>
                     <th className="text-left py-3 px-2 font-medium text-fundinv-muted">Requested</th>
@@ -191,16 +200,26 @@ export default function OperationsFundFlowsPage() {
                         <div className="text-fundinv-primary">{flow.investor_name || '—'}</div>
                         <div className="text-xs text-fundinv-muted">{flow.investor_email || '—'}</div>
                       </td>
-                      <td className="py-3 px-2 text-sm text-fundinv-primary">{flow.fund_name || 'Unallocated'}</td>
                       <td className="py-3 px-2">
                         <span className={`px-2 py-1 text-xs font-medium rounded capitalize ${
                           flow.flow_type === 'deposit' ? 'text-fundinv-accent bg-blue-50' : 'text-fundinv-warning bg-amber-50'
                         }`}>
-                          {flow.flow_type}
+                          {flow.flow_type === 'deposit' ? 'subscription' : flow.flow_type === 'withdrawal' ? 'redemption' : flow.flow_type}
                         </span>
                       </td>
+                      <td className="py-3 px-2 text-sm text-fundinv-primary">{flow.fund_name || 'Legacy / unallocated'}</td>
                       <td className="py-3 px-2 text-right font-mono text-fundinv-primary">
                         {formatAmount(flow.amount)}
+                      </td>
+                      <td className={`py-3 px-2 text-right font-mono ${
+                        flow.paid_amount == null
+                          ? 'text-fundinv-muted'
+                          : Math.abs(flow.paid_amount - flow.amount) < 0.001
+                            ? 'text-fundinv-success'
+                            : 'text-red-600 font-semibold'
+                      }`}>
+                        {flow.paid_amount == null ? '—' : formatAmount(flow.paid_amount)}
+                        {flow.payment_received_at && <div className="text-[10px] font-sans text-fundinv-muted">{formatDate(flow.payment_received_at)}</div>}
                       </td>
                       <td className="py-3 px-2">
                         <span className={`px-2 py-1 text-xs font-medium rounded capitalize ${statusColor(flow.status)}`}>
@@ -222,14 +241,23 @@ export default function OperationsFundFlowsPage() {
                       <td className="py-3 px-2 text-xs text-fundinv-muted max-w-[150px] truncate">{flow.notes || '—'}</td>
                       <td className="py-3 px-6">
                         <div className="flex gap-1">
-                          {canApprove(flow.status) && (
+                          {canVerifyPayNow(flow) && (
+                            <Button
+                              onClick={() => handleAction(flow.id, 'verify-complete')}
+                              disabled={actionLoading === flow.id}
+                              className="px-2 py-1 text-xs whitespace-nowrap"
+                            >
+                              {actionLoading === flow.id ? '...' : 'Verify & Complete'}
+                            </Button>
+                          )}
+                          {canApprove(flow) && (
                             <Button
                               variant="secondary"
                               onClick={() => handleAction(flow.id, 'approve')}
                               disabled={actionLoading === flow.id}
                               className="px-2 py-1 text-xs"
                             >
-                              {actionLoading === flow.id ? '...' : flow.flow_type === 'deposit' ? 'Approve & Request Payment' : 'Approve'}
+                              {actionLoading === flow.id ? '...' : 'Approve'}
                             </Button>
                           )}
                           {canComplete(flow.status) && (

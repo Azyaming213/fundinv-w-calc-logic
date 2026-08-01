@@ -40,6 +40,8 @@ Client/.yarn/versions
 
 # testing
 /Client/coverage
+/Client/test-results/
+/Client/playwright-report/
 
 # next.js
 /Client/out/

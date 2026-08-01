@@ -153,6 +153,20 @@ def get_orders(status: str = "all", limit: int = 50) -> list[dict]:
         return []
 
 
+def get_order(order_id: str) -> dict:
+    """Fetch one order so asynchronous fills can be reconciled safely."""
+    try:
+        resp = requests.get(
+            f"{settings.ALPACA_BASE_URL}/v2/orders/{order_id}",
+            headers=ALPACA_HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return {}
+
+
 def get_positions() -> list[dict]:
     try:
         resp = requests.get(

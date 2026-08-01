@@ -92,8 +92,8 @@ export interface ManagerInvestor {
   email: string;
   full_name: string;
   is_active: boolean;
-  total_wallet: number;
   total_in_funds: number;
+  /** Look-through exposure already contained in total_in_funds; never add to AUM. */
   total_in_stocks: number;
   account_count: number;
   onboarded_at: string | null;
@@ -206,6 +206,7 @@ export interface PortfolioSummary {
   fund_positions: FundPosition[];
   accounts: Account[];
   today_pnl: number;
+  pnl_as_of_date: string | null;
   pnl: {
     total_pnl: number;
     realized_pnl: number;
@@ -324,16 +325,22 @@ export interface FundFlowEntry {
   fund_id?: number | null;
   fund_name?: string | null;
   amount: number;
+  paid_amount?: number | null;
+  currency: string;
   status: string;
   request_id: string;
   requested_at: string | null;
   processed_at: string | null;
+  payment_received_at?: string | null;
   processed_by_email: string | null;
   processed_by_name: string | null;
   notes: string | null;
   status_message?: string;
   next_action?: string;
   payment_url?: string | null;
+  provider?: string | null;
+  provider_reference?: string | null;
+  paynow_qr_data_url?: string | null;
 }
 
 export interface PaymentRecord {

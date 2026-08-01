@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     AUTO_MIGRATE: str = "false"
     ENABLE_SCHEDULER: str = "false"
+    RUN_PNL_ON_STARTUP: str = "false"
     ENABLE_AUTOMATED_TRADING: str = "false"
     SCHEDULER_TIMEZONE: str = "Asia/Singapore"
 
@@ -24,6 +25,12 @@ class Settings(BaseSettings):
 
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
+    # "paynow_demo" provides a fixed-amount, non-monetary QR demonstration;
+    # "manual" uses two-step external transfer verification; "stripe" uses signed webhooks.
+    FUND_FLOW_PROVIDER: str = "paynow_demo"
+    PAYNOW_DEMO_RECIPIENT_NAME: str = "FundInv Demo"
+    PAYNOW_DEMO_UEN: str = "T00FUNDINV"
+    MAX_SUBSCRIPTION_AMOUNT: float = 1000000.00
     STRIPE_CONNECT_CURRENCY: str = "usd"
     STRIPE_CONNECT_REFRESH_URL: str = "http://localhost:3000/dashboard/investor/fund-flows"
     STRIPE_CONNECT_RETURN_URL: str = "http://localhost:3000/dashboard/investor/fund-flows?connect=complete"

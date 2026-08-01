@@ -36,6 +36,12 @@ const tabs = [
     icon: <span className="text-xs">P&amp;L</span>,
   },
   {
+    label: 'Daily Valuation',
+    href: '/dashboard/manager/valuations',
+    claim: CLAIMS.updateFunds,
+    icon: <span className="text-xs">NAV</span>,
+  },
+  {
     label: 'Transactions',
     href: '/dashboard/manager/transactions',
     claim: CLAIMS.readTransactions,

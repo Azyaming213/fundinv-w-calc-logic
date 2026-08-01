@@ -1,5 +1,9 @@
 # Operations Flows
 
+> Historical provider detail only. The current manual/Stripe-neutral approval
+> and settlement boundary is defined in
+> [Authoritative Fund Portal Workflow](../FUND_PORTAL_WORKFLOW.md).
+
 ## 1. Dashboard & Navigation Flow
 
 ```mermaid

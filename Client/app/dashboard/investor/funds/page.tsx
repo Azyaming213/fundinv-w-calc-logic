@@ -164,7 +164,7 @@ export default function FundsPage() {
         <div className="max-w-6xl mx-auto px-8 py-8">
             <div className="mb-8">
                 <h1 className="text-2xl font-semibold text-fundinv-primary">Funds</h1>
-                <p className="text-sm text-fundinv-muted mt-1">Invest in funds curated by your fund manager</p>
+                <p className="text-sm text-fundinv-muted mt-1">Subscribe to fund products curated and managed by your portfolio manager</p>
             </div>
 
             <Card className="mb-6">
@@ -308,21 +308,9 @@ export default function FundsPage() {
                                 </select>
                             </label>
 
-                            {fund.ticker && fund.fund_type !== 'managed' && (
-                                <Button variant="primary" className="w-full" onClick={() => openInvestModal(fund)}>
-                                    Request to Buy {fund.ticker}
-                                </Button>
-                            )}
-                            {fund.ticker && fund.fund_type === 'managed' && (
-                                <Button variant="primary" className="w-full" onClick={() => openInvestModal(fund)}>
-                                    Invest in {fund.ticker}
-                                </Button>
-                            )}
-                            {!fund.ticker && fund.fund_type === 'managed' && (
-                                <Button variant="primary" className="w-full" onClick={() => openInvestModal(fund)}>
-                                    Invest in {fund.name}
-                                </Button>
-                            )}
+                            <Button variant="primary" className="w-full" onClick={() => openInvestModal(fund)}>
+                                Request Subscription
+                            </Button>
                         </Card>
                     ))}
                 </div>
@@ -334,10 +322,7 @@ export default function FundsPage() {
                     <div className="relative w-full max-w-md bg-white rounded-lg shadow-xl border border-fundinv-border">
                         <div className="px-6 py-4 border-b border-fundinv-border flex items-center justify-between">
                             <h2 className="text-lg font-semibold text-fundinv-primary">
-                                {investFund.fund_type === 'managed'
-                                    ? (investFund.ticker ? `Invest in ${investFund.ticker}` : `Invest in ${investFund.name}`)
-                                    : (investFund.ticker ? `Request to Buy ${investFund.ticker}` : `Request to Buy ${investFund.name}`)
-                                }
+                                Subscribe to {investFund.name}
                             </h2>
                             <button onClick={closeInvestModal} className="text-fundinv-muted hover:text-fundinv-primary transition" aria-label="Close">
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -354,13 +339,10 @@ export default function FundsPage() {
                                         </svg>
                                     </div>
                                     <p className="text-sm font-semibold text-fundinv-primary mb-1">
-                                        {investFund.fund_type === 'managed' ? 'Fund Investment Placed' : 'Investment Request Submitted'}
+                                        Subscription Request Submitted
                                     </p>
                                     <p className="text-xs text-fundinv-muted mb-3">
-                                        {investFund.fund_type === 'managed'
-                                            ? `$${investResult.amount.toFixed(2)} allocated to ${investResult.fund_name || investFund.name}`
-                                            : `Requested $${investResult.amount.toFixed(2)} in ${investFund.ticker || investFund.name}. Pending manager review.`
-                                        }
+                                        Requested ${investResult.amount.toFixed(2)} in {investResult.fund_name || investFund.name}. Operations must verify funds before units are issued.
                                     </p>
                                     <div className="bg-fundinv-surface rounded-md p-3 text-xs text-left mb-3">
                                         <div className="flex justify-between mb-1">
@@ -447,7 +429,7 @@ export default function FundsPage() {
 
                                     {investAmount && selectedAccount && (
                                         <p className="text-xs text-fundinv-muted">
-                                            {selectedAccount.account_name}: ${selectedAccount.fund_balance.toFixed(2)} available
+                                            Units will be issued to {selectedAccount.account_name} after Operations verifies receipt.
                                         </p>
                                     )}
 
@@ -462,7 +444,7 @@ export default function FundsPage() {
                                             Cancel
                                         </Button>
                                         <Button type="submit" disabled={investing || !selectedAccountId || !investAmount} className="flex-1">
-                                            {investing ? 'Placing Order...' : 'Buy Now'}
+                                            {investing ? 'Submitting...' : 'Submit Subscription'}
                                         </Button>
                                     </div>
                                 </form>

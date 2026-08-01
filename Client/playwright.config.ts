@@ -12,7 +12,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: 'npm run dev -- --hostname 127.0.0.1',
+      command: 'NODE_OPTIONS=--max-old-space-size=2048 npm run build -- --webpack && npm run start -- --hostname localhost --port 3000',
       url: 'http://localhost:3000',
       reuseExistingServer: true,
       timeout: 120_000,

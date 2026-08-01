@@ -103,8 +103,9 @@ if [[ "${INSTALL_PLAYWRIGHT:-0}" == "1" ]]; then
 fi
 
 echo "[6/6] Verifying the setup"
-(cd "$SERVER_DIR" && venv/bin/python -m compileall -q .)
+(cd "$SERVER_DIR" && venv/bin/python -m unittest discover -s tests -v)
 (cd "$CLIENT_DIR" && npm run lint)
+(cd "$CLIENT_DIR" && NODE_OPTIONS=--max-old-space-size=2048 npm run build -- --webpack)
 
 cat <<EOF
 
@@ -118,5 +119,6 @@ Then open:
   API docs: http://localhost:8000/docs
 
 Seed accounts are documented in README.md.
-Provider-backed features require valid Stripe test, Alpaca paper and SMTP values in .env.
+Manual fund-flow accounting works without Stripe. Stripe settlement, Alpaca paper orders,
+and email delivery require their corresponding credentials in .env.
 EOF

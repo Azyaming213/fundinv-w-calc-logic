@@ -15,6 +15,7 @@ class FundFlow(Base):
     fund_id = Column(Integer, ForeignKey("fundinv.funds.id"), nullable=True, index=True)
     flow_type = Column(String(20), nullable=False)
     amount = Column(Numeric(precision=18, scale=4), nullable=False)
+    paid_amount = Column(Numeric(precision=18, scale=4), nullable=True)
     currency = Column(String(3), nullable=False, default="USD")
     status = Column(String(30), nullable=False, default="pending")
     request_id = Column(String(100), unique=True, nullable=False)
@@ -25,6 +26,7 @@ class FundFlow(Base):
     provider = Column(String(30), nullable=True)
     provider_reference = Column(String(255), nullable=True, unique=True)
     payment_url = Column(String(2000), nullable=True)
+    payment_received_at = Column(DateTime(timezone=True), nullable=True)
     failure_reason = Column(String(1000), nullable=True)
 
     investor = relationship("Investor")

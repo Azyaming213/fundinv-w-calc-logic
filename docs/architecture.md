@@ -92,7 +92,7 @@ sequenceDiagram
 | Payments | Stripe API | latest |
 | Trading | Alpaca Markets | paper API |
 | Email | yagmail (SMTP) | — |
-| PDF | WeasyPrint | — |
+| PDF | ReportLab | — |
 | Jobs | APScheduler | — |
 | Migrations | Alembic | — |
 

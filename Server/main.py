@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers import auth_routers, funds_routers, portfolio_routers, admin_routers, articles_routers, trading_routers, manager_routers, feedback_routers
 from jobs.scheduler import start_scheduler, stop_scheduler
+from jobs.pnl_job import run_daily_pnl_snapshot
 from database import SessionLocal
 from models import Role, RoleClaim
 import appconstants as AppConstants
@@ -16,13 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 def sync_role_claims():
-    """Ensure all claims defined in CLAIMS_BY_ROLE exist in the role_claims table."""
+    """Reconcile persisted role claims with the authoritative permission matrix."""
     db = SessionLocal()
     try:
         for role_name, claim_keys in AppConstants.CLAIMS_BY_ROLE.items():
             role = db.query(Role).filter(Role.name == role_name).first()
             if not role:
                 continue
+            db.query(RoleClaim).filter(
+                RoleClaim.role_id == role.id,
+                ~RoleClaim.claim_key.in_(claim_keys),
+            ).delete(synchronize_session=False)
             for claim_key in claim_keys:
                 existing = db.query(RoleClaim).filter(
                     RoleClaim.role_id == role.id,
@@ -42,6 +47,10 @@ async def lifespan(app: FastAPI):
     scheduler_enabled = settings.ENABLE_SCHEDULER.lower() == "true"
     if scheduler_enabled:
         start_scheduler()
+        if settings.RUN_PNL_ON_STARTUP.lower() == "true":
+            # A normal/demo launch must not silently serve stale P&L when the
+            # mandatory ingestion pipeline cannot persist today's snapshot.
+            run_daily_pnl_snapshot(raise_on_error=True)
     try:
         sync_role_claims()
     except Exception:

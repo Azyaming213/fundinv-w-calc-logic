@@ -343,8 +343,20 @@ def snapshot_daily_holdings(db: Session, as_of: Optional[datetime] = None) -> in
         )
         net_flow = sum((Decimal(e.amount) for e in entries), Decimal("0"))
         flow_units = sum((Decimal(e.units or 0) for e in entries), Decimal("0"))
-        closing_units = sum((Decimal(p.units) for p in positions), Decimal("0"))
-        opening_units = max(Decimal("0"), closing_units - flow_units)
+        tracked_closing_units = sum((Decimal(p.units) for p in positions), Decimal("0"))
+        if previous:
+            # Preserve units belonging to investors outside this portal. The
+            # challenge dataset can represent only a subset of a fund's total
+            # ownership, so summing portal positions alone would incorrectly
+            # inflate their shareholding to 100% on the next snapshot.
+            opening_units = Decimal(previous.units_outstanding)
+            closing_units = opening_units + flow_units
+            if closing_units < tracked_closing_units:
+                closing_units = tracked_closing_units
+                opening_units = max(Decimal("0"), closing_units - flow_units)
+        else:
+            closing_units = tracked_closing_units
+            opening_units = max(Decimal("0"), closing_units - flow_units)
         opening_nav = previous_nav or market_nav
         opening_assets = opening_units * opening_nav
         daily_pnl = opening_units * (market_nav - opening_nav)
@@ -356,6 +368,10 @@ def snapshot_daily_holdings(db: Session, as_of: Optional[datetime] = None) -> in
             .filter(FundValuation.fund_id == fund.id, FundValuation.valuation_date == snapshot_date)
             .first()
         )
+        if valuation is not None and valuation.status == "finalized" and valuation.source == "manager_entry":
+            # Manager-entered P&L is the authoritative challenge workflow.
+            # Scheduled snapshots must never rewrite its performance fields.
+            continue
         if valuation is None:
             valuation = FundValuation(fund_id=fund.id, valuation_date=snapshot_date)
             db.add(valuation)
@@ -366,6 +382,9 @@ def snapshot_daily_holdings(db: Session, as_of: Optional[datetime] = None) -> in
         valuation.closing_assets = closing_assets
         valuation.units_outstanding = closing_units
         valuation.nav_per_unit = market_nav
+        valuation.status = "finalized"
+        valuation.source = "scheduled_snapshot"
+        valuation.finalized_at = valuation.finalized_at or as_of
 
         investor_ids = {p.investor_id for p in positions}
         for investor_id in investor_ids:

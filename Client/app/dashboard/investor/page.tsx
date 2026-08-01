@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import Image from 'next/image';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 import Card from '../../components/Card';
 import Button from '../../components/Button';
 import Input from '../../components/Input';
@@ -11,7 +11,6 @@ import { getUser } from '../../lib/auth';
 import type {
   Transaction,
   Position,
-  SellResult,
   PortfolioSummary,
   FundInvestmentItem,
   Fund,
@@ -31,8 +30,21 @@ const STRATEGIES = [
     { value: 'income', label: 'Income', desc: 'Focus on steady returns' },
 ];
 
+interface PayNowDepositResult {
+    id: number;
+    request_id: string;
+    fund_name: string;
+    amount: number;
+    currency: string;
+    status: string;
+    provider: string | null;
+    message: string;
+    paynow_qr_data_url?: string | null;
+    paid_amount?: number | null;
+    payment_received_at?: string | null;
+}
+
 export default function InvestorDashboard() {
-    const router = useRouter();
     const [summary, setSummary] = useState<PortfolioSummary | null>(null);
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [loading, setLoading] = useState(true);
@@ -47,15 +59,16 @@ export default function InvestorDashboard() {
     const [periodEnd, setPeriodEnd] = useState(() => new Date().toISOString().slice(0, 10));
     const [periodLoading, setPeriodLoading] = useState(false);
     const [periodError, setPeriodError] = useState<string | null>(null);
+    const [performanceTrend, setPerformanceTrend] = useState<Array<{
+        holding_date: string;
+        account_value: number;
+        daily_pnl: number;
+        net_flow: number;
+    }>>([]);
 
     const [positions, setPositions] = useState<Position[]>([]);
     const [fundInvestments, setFundInvestments] = useState<FundInvestmentItem[]>([]);
     const [positionsError, setPositionsError] = useState<string | null>(null);
-    const [sellPosition, setSellPosition] = useState<Position | null>(null);
-    const [sellAmount, setSellAmount] = useState('');
-    const [selling, setSelling] = useState(false);
-    const [sellError, setSellError] = useState<string | null>(null);
-    const [sellResult, setSellResult] = useState<SellResult | null>(null);
 
     const [showAccountModal, setShowAccountModal] = useState(false);
     const [accountName, setAccountName] = useState('');
@@ -76,7 +89,8 @@ export default function InvestorDashboard() {
     const [topUpAmount, setTopUpAmount] = useState('');
     const [topUpLoading, setTopUpLoading] = useState(false);
     const [topUpError, setTopUpError] = useState<string | null>(null);
-    const [topUpResult, setTopUpResult] = useState<string | null>(null);
+    const [topUpResult, setTopUpResult] = useState<PayNowDepositResult | null>(null);
+    const [topUpPaymentLoading, setTopUpPaymentLoading] = useState(false);
     const [funds, setFunds] = useState<Fund[]>([]);
     const [topUpFundId, setTopUpFundId] = useState<number | null>(null);
 
@@ -96,14 +110,16 @@ export default function InvestorDashboard() {
         try {
             const monthStart = new Date();
             monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
-            const [summaryRes, txnRes, monthlyRes] = await Promise.all([
+            const [summaryRes, txnRes, monthlyRes, trendRes] = await Promise.all([
                 api.get<PortfolioSummary>('/api/portfolio/summary'),
                 api.get<{ transactions: Transaction[] }>('/api/portfolio/recent-transactions'),
                 api.get<{ pnl: PnlReport }>(`/api/portfolio/pnl?start_date=${encodeURIComponent(monthStart.toISOString())}&end_date=${encodeURIComponent(new Date().toISOString())}`),
+                api.get<Array<{ holding_date: string; account_value: number; daily_pnl: number; net_flow: number }>>('/api/portfolio/chart-data'),
             ]);
             setSummary(summaryRes);
             setTransactions(txnRes.transactions || []);
             setMonthlyPnl(monthlyRes.pnl);
+            setPerformanceTrend(trendRes || []);
             const fundsRes = await api.get<{ funds: Fund[] }>('/api/funds');
             setFunds(fundsRes.funds || []);
         } catch (err) {
@@ -164,10 +180,6 @@ export default function InvestorDashboard() {
         navPerUnit: f.nav_per_unit ?? 0,
     }));
 
-    const handlePieSegmentClick = (fund: string) => {
-        router.push(`/dashboard/investor/stock/${encodeURIComponent(fund)}`);
-    };
-
     const accounts = useMemo(() => summary?.accounts ?? [], [summary?.accounts]);
     const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? accounts[0] ?? null;
 
@@ -213,12 +225,37 @@ export default function InvestorDashboard() {
                 fund_id: String(topUpFundId),
                 amount: String(amount),
             });
-            const data = await api.post<{ request_id: string; amount: number; status: string; message: string }>(`/api/funds/deposit?${params}`);
-            setTopUpResult(`Deposit request ${data.request_id} submitted. Amount: $${amount.toFixed(2)}. Status: ${data.status.replace(/_/g, ' ')}.`);
+            const data = await api.post<PayNowDepositResult>(`/api/funds/deposit?${params}`);
+            setTopUpResult(data);
         } catch (err) {
             setTopUpError((err as { message?: string }).message || 'Deposit request failed');
         } finally {
             setTopUpLoading(false);
+        }
+    };
+
+    const handleSimulatePayNow = async () => {
+        if (!topUpResult) return;
+        setTopUpPaymentLoading(true);
+        setTopUpError(null);
+        try {
+            const data = await api.post<{
+                status: string;
+                paid_amount: number;
+                payment_received_at: string;
+                message: string;
+            }>(`/api/funds/fund-flows/${topUpResult.id}/simulate-paynow`, {});
+            setTopUpResult({
+                ...topUpResult,
+                status: data.status,
+                paid_amount: data.paid_amount,
+                payment_received_at: data.payment_received_at,
+                message: data.message,
+            });
+        } catch (err) {
+            setTopUpError((err as { message?: string }).message || 'Could not record demo PayNow payment');
+        } finally {
+            setTopUpPaymentLoading(false);
         }
     };
 
@@ -287,54 +324,6 @@ export default function InvestorDashboard() {
         } finally {
             setExportingPdf(false);
         }
-    };
-
-    const handleSell = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!sellPosition || !selectedAccount) return;
-        const amount = parseFloat(sellAmount);
-        if (isNaN(amount) || amount <= 0) {
-            setSellError('Please enter a valid amount');
-            return;
-        }
-        setSelling(true);
-        setSellError(null);
-        try {
-            const params = new URLSearchParams({ amount: String(amount), investment_account_id: String(selectedAccount.id) });
-            if (sellPosition.fund_id) {
-                params.set('fund_id', String(sellPosition.fund_id));
-            }
-            const result = await api.post<{ request_id: string; amount: number; status: string; message: string }>(`/api/funds/withdraw?${params}`);
-            setSellResult({
-                order_id: 0,
-                alpaca_order_id: result.request_id,
-                symbol: sellPosition.symbol,
-                amount,
-                status: result.status,
-                position_market_value: sellPosition.market_value,
-                sold_value: amount,
-                remaining_position: sellPosition.market_value - amount,
-            });
-            fetchData();
-            fetchPositions();
-        } catch (err) {
-            setSellError((err as { message?: string }).message || 'Redemption request failed');
-        } finally {
-            setSelling(false);
-        }
-    };
-
-    const openSellModal = (pos: Position) => {
-        setSellPosition(pos);
-        setSellAmount(String(Math.min(pos.market_value, pos.market_value)));
-        setSellError(null);
-        setSellResult(null);
-    };
-
-    const closeSellModal = () => {
-        setSellPosition(null);
-        setSellError(null);
-        setSellResult(null);
     };
 
     const handleCreateAccount = async (e: React.FormEvent) => {
@@ -508,11 +497,13 @@ export default function InvestorDashboard() {
                             </div>
                         </Card>
 
-                        <Card title="Today's P&L">
+                        <Card title="Daily P&L">
                             <p className={`text-2xl font-semibold ${pnlColor(summary?.today_pnl ?? 0)}`}>
                                 {fmt(summary?.today_pnl ?? 0)}
                             </p>
-                            <p className="text-xs text-fundinv-muted mt-1">Allocated using opening fund units</p>
+                            <p className="text-xs text-fundinv-muted mt-1">
+                                {summary?.pnl_as_of_date ? `As of ${summary.pnl_as_of_date}` : 'No daily snapshot available'}
+                            </p>
                         </Card>
 
                         <Card title="YTD Return">
@@ -546,6 +537,29 @@ export default function InvestorDashboard() {
                         )}
                     </Card>
 
+                    <Card title="Portfolio performance trend" className="mb-6">
+                        {performanceTrend.length === 0 ? (
+                            <div className="h-64 flex items-center justify-center text-sm text-fundinv-muted">
+                                No daily performance history available
+                            </div>
+                        ) : (
+                            <div className="h-72 min-h-[288px] min-w-0">
+                                <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                                    <LineChart data={performanceTrend} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                                        <XAxis dataKey="holding_date" tick={{ fontSize: 11 }} />
+                                        <YAxis tick={{ fontSize: 11 }} tickFormatter={(value) => `$${Number(value).toLocaleString()}`} />
+                                        <Tooltip
+                                            formatter={(value: number, name: string) => [fmt(Number(value)), name === 'account_value' ? 'Account value' : name]}
+                                            labelFormatter={(label) => `As of ${label}`}
+                                        />
+                                        <Line type="monotone" dataKey="account_value" name="Account value" stroke="#2563EB" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            </div>
+                        )}
+                    </Card>
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                         <Card title="Fund Allocation">
                             {chartData.length === 0 ? (
@@ -570,8 +584,6 @@ export default function InvestorDashboard() {
                                                     <Cell
                                                         key={idx}
                                                         fill={CHART_COLORS[idx % CHART_COLORS.length]}
-                                                        onClick={() => handlePieSegmentClick(f.name)}
-                                                        style={{ cursor: 'pointer' }}
                                                     />
                                                 ))}
                                             </Pie>
@@ -582,7 +594,7 @@ export default function InvestorDashboard() {
                                         </PieChart>
                                     </ResponsiveContainer>
                                     <div className="text-center -mt-2">
-                                        <p className="text-xs text-fundinv-muted">Click a segment to see stock details</p>
+                                        <p className="text-xs text-fundinv-muted">Your value in each subscribed fund product</p>
                                     </div>
                                 </div>
                             )}
@@ -650,7 +662,8 @@ export default function InvestorDashboard() {
                     </div>
 
                     {positions.length > 0 ? (
-                        <Card title="My Holdings">
+                        <Card title="Underlying Portfolio Holdings">
+                            <p className="px-6 pb-3 text-xs text-fundinv-muted">Read-only look-through of securities managed on your behalf. Redemption is requested at fund level.</p>
                             <div className="overflow-x-auto -mx-6">
                                 <table className="w-full text-sm">
                                     <thead>
@@ -661,19 +674,13 @@ export default function InvestorDashboard() {
                                             <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Avg Price</th>
                                             <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Current</th>
                                             <th className="text-right py-2 px-2 font-medium text-fundinv-muted">P&L</th>
-                                            <th className="text-right py-2 px-6 font-medium text-fundinv-muted">Sell</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {positions.map((p) => (
                                             <tr key={p.symbol} className="border-b border-fundinv-border last:border-0 hover:bg-fundinv-surface/50">
                                                 <td className="py-2.5 px-6">
-                                                    <button
-                                                        onClick={() => handlePieSegmentClick(p.symbol)}
-                                                        className="font-medium text-fundinv-accent hover:underline cursor-pointer"
-                                                    >
-                                                        {p.symbol}
-                                                    </button>
+                                                    <span className="font-medium text-fundinv-primary">{p.symbol}</span>
                                                     {p.fund_name && <p className="text-xs text-fundinv-muted">{p.fund_name}</p>}
                                                 </td>
                                                 <td className="py-2.5 px-2 text-right font-mono text-fundinv-muted">{Number(p.qty).toFixed(4)}</td>
@@ -683,11 +690,6 @@ export default function InvestorDashboard() {
                                                 <td className={`py-2.5 px-2 text-right font-mono font-medium ${pnlColor(p.unrealized_pl)}`}>
                                                     {fmt(p.unrealized_pl)} ({Number(p.unrealized_plpc).toFixed(1)}%)
                                                 </td>
-                                                <td className="py-2.5 px-6 text-right">
-                                                        <Button variant="secondary" className="text-xs py-1 px-3 !text-amber-600 !border-amber-200 hover:!bg-amber-50" onClick={() => openSellModal(p)}>
-                                                            Redeem
-                                                        </Button>
-                                                </td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -695,12 +697,12 @@ export default function InvestorDashboard() {
                             </div>
                         </Card>
                     ) : (
-                        <Card title="My Holdings">
+                        <Card title="Underlying Portfolio Holdings">
                             <div className="h-20 flex items-center justify-center text-sm text-fundinv-muted">
                                 {positionsError ? (
                                     <span className="text-fundinv-danger">{positionsError}</span>
                                 ) : (
-                                    'No holdings yet. Buy stocks or funds to see them here.'
+                                    'No underlying holdings have been reported by your manager yet.'
                                 )}
                             </div>
                         </Card>
@@ -748,84 +750,6 @@ export default function InvestorDashboard() {
                         </Card>
                     )}
                 </>
-            )}
-
-            {sellPosition && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-                    <div className="fixed inset-0 bg-black/40" onClick={closeSellModal} />
-                    <div className="relative w-full max-w-md bg-white rounded-lg shadow-xl border border-fundinv-border">
-                        <div className="px-6 py-4 border-b border-fundinv-border flex items-center justify-between">
-                            <h2 className="text-lg font-semibold text-fundinv-primary">Request Redemption — {sellPosition.symbol}</h2>
-                            <button onClick={closeSellModal} className="text-fundinv-muted hover:text-fundinv-primary transition" aria-label="Close">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        </div>
-                        <div className="px-6 py-5">
-                            {sellResult ? (
-                                <div className="text-center py-4">
-                                    <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-3">
-                                        <svg className="w-6 h-6 text-fundinv-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                        </svg>
-                                    </div>
-                                    <p className="text-sm font-semibold text-fundinv-primary mb-1">Redemption Request Submitted</p>
-                                    <p className="text-xs text-fundinv-muted mb-3">Requested withdrawal of ${sellResult.amount.toFixed(2)} from {sellResult.symbol}</p>
-                                    <div className="bg-fundinv-surface rounded-md p-3 text-xs text-left mb-3">
-                                        <div className="flex justify-between mb-1"><span className="text-fundinv-muted">Status</span><span className="font-medium text-amber-600 capitalize">{sellResult.status.replace(/_/g, ' ')}</span></div>
-                                        <div className="flex justify-between"><span className="text-fundinv-muted">Request ID</span><span className="font-mono text-fundinv-primary">{sellResult.alpaca_order_id}</span></div>
-                                    </div>
-                                    <Button className="w-full" onClick={closeSellModal}>Done</Button>
-                                </div>
-                            ) : (
-                                <form onSubmit={handleSell} className="flex flex-col gap-4">
-                                    <div className="bg-fundinv-surface rounded-md p-3 flex items-center justify-between">
-                                        <div>
-                                            <p className="text-xs text-fundinv-muted">Market Value</p>
-                                            <p className="text-sm font-semibold text-fundinv-primary">{fmt(sellPosition.market_value)}</p>
-                                        </div>
-                                        <div className="text-right">
-                                            <p className="text-xs text-fundinv-muted">P&L</p>
-                                            <p className={`text-sm font-semibold ${pnlColor(sellPosition.unrealized_pl)}`}>
-                                                {fmt(sellPosition.unrealized_pl)} ({Number(sellPosition.unrealized_plpc).toFixed(1)}%)
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    <div className="flex gap-2 flex-wrap">
-                                        {[25, 50, 100, 250, 500].map((amt) => (
-                                            <button key={amt} type="button" onClick={() => setSellAmount(String(Math.min(amt, sellPosition.market_value)))}
-                                                className={`px-3 py-1.5 text-sm font-medium rounded-md border transition ${sellAmount === String(amt) ? 'border-fundinv-accent bg-fundinv-accent text-white' : 'border-fundinv-border text-fundinv-muted hover:border-fundinv-primary'
-                                                    }`}
-                                            >
-                                                ${amt}
-                                            </button>
-                                        ))}
-                                        <button type="button" onClick={() => setSellAmount(String(sellPosition.market_value))}
-                                            className={`px-3 py-1.5 text-sm font-medium rounded-md border transition ${parseFloat(sellAmount) === sellPosition.market_value ? 'border-red-500 bg-red-50 text-red-700' : 'border-fundinv-border text-fundinv-muted hover:border-red-300'
-                                                }`}
-                                        >
-                                            Max
-                                        </button>
-                                    </div>
-
-                                    <Input label="Amount (USD)" type="number" placeholder="Enter amount" value={sellAmount}
-                                        onChange={(e) => setSellAmount(e.target.value)} min="1" step="0.01" required disabled={selling}
-                                    />
-                                    <p className="text-xs text-fundinv-muted">Account: {selectedAccount?.account_name}</p>
-
-                                    {sellError && <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-md"><p className="text-sm text-red-700">{sellError}</p></div>}
-
-                                    <div className="flex gap-2 mt-1">
-                                        <Button type="button" variant="secondary" onClick={closeSellModal} disabled={selling} className="flex-1">Cancel</Button>
-                                        <Button type="submit" disabled={selling || !sellAmount} className="flex-1">{selling ? 'Submitting...' : 'Submit Redemption Request'}</Button>
-                                    </div>
-                                </form>
-                            )}
-                        </div>
-                    </div>
-                </div>
             )}
 
             {showAccountModal && (
@@ -1012,15 +936,46 @@ export default function InvestorDashboard() {
                         </div>
                         <div className="px-6 py-5">
                             {topUpResult ? (
-                                <div className="text-center py-4">
-                                    <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-3">
-                                        <svg className="w-6 h-6 text-fundinv-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                        </svg>
-                                    </div>
-                                    <p className="text-sm font-medium text-fundinv-primary mb-2">Deposit Request Submitted</p>
-                                    <p className="text-xs text-fundinv-muted">{topUpResult}</p>
-                                    <Button className="w-full mt-4" onClick={() => setShowTopUpModal(false)}>Done</Button>
+                                <div className="text-center py-2">
+                                    {topUpResult.status === 'awaiting_investor_payment' ? (
+                                        <>
+                                            <p className="text-base font-semibold text-fundinv-primary">Demo PayNow Payment</p>
+                                            <p className="mt-1 text-xs text-fundinv-muted">No real money is transferred.</p>
+                                            {topUpResult.paynow_qr_data_url && (
+                                                <Image
+                                                    src={topUpResult.paynow_qr_data_url}
+                                                    alt={`Demo PayNow QR for ${topUpResult.request_id}`}
+                                                    width={208}
+                                                    height={208}
+                                                    unoptimized
+                                                    className="w-52 h-52 mx-auto my-4 border border-fundinv-border rounded-md"
+                                                />
+                                            )}
+                                            <div className="rounded-md bg-fundinv-surface border border-fundinv-border px-4 py-3 text-left text-sm">
+                                                <div className="flex justify-between"><span className="text-fundinv-muted">Fund</span><span>{topUpResult.fund_name}</span></div>
+                                                <div className="flex justify-between mt-1"><span className="text-fundinv-muted">Fixed amount</span><strong>{topUpResult.currency} {topUpResult.amount.toFixed(2)}</strong></div>
+                                                <div className="flex justify-between mt-1 gap-3"><span className="text-fundinv-muted">Reference</span><span className="font-mono text-xs break-all">{topUpResult.request_id}</span></div>
+                                            </div>
+                                            <p className="mt-3 text-xs text-fundinv-muted">The QR locks the exact requested amount. The demo payment cannot submit a different amount.</p>
+                                            {topUpError && <p className="mt-3 text-sm text-red-700">{topUpError}</p>}
+                                            <Button className="w-full mt-4" onClick={handleSimulatePayNow} disabled={topUpPaymentLoading}>
+                                                {topUpPaymentLoading ? 'Recording...' : 'Simulate QR Scan & Payment'}
+                                            </Button>
+                                            <Button variant="secondary" className="w-full mt-2" onClick={() => setShowTopUpModal(false)}>Pay Later</Button>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-3">
+                                                <svg className="w-6 h-6 text-fundinv-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                                </svg>
+                                            </div>
+                                            <p className="text-sm font-medium text-fundinv-primary mb-2">Demo Payment Recorded</p>
+                                            <p className="text-xs text-fundinv-muted">Requested and paid: {topUpResult.currency} {(topUpResult.paid_amount ?? topUpResult.amount).toFixed(2)}.</p>
+                                            <p className="mt-2 text-xs text-fundinv-muted">Operations can now verify and complete the subscription in one action. Units have not been issued yet.</p>
+                                            <Button className="w-full mt-4" onClick={() => setShowTopUpModal(false)}>Done</Button>
+                                        </>
+                                    )}
                                 </div>
                             ) : (
                                 <form onSubmit={handleTopUp} className="flex flex-col gap-4">
@@ -1074,17 +1029,18 @@ export default function InvestorDashboard() {
                                     <Input
                                         label="Amount (USD)"
                                         type="number"
-                                        placeholder="Enter amount to deposit"
+                                        placeholder="Enter subscription amount"
                                         value={topUpAmount}
                                         onChange={(e) => setTopUpAmount(e.target.value)}
                                         min="1"
+                                        max="1000000"
                                         step="0.01"
                                         required
                                         disabled={topUpLoading}
                                     />
 
                                     <p className="text-xs text-fundinv-muted">
-                                        Choose the fund that will receive the money. Operations approval is followed by payment; units appear only after Stripe confirms payment.
+                                        A fixed-amount dummy PayNow QR appears next. Operations issues units only after the matching demo receipt is verified.
                                     </p>
 
                                     {topUpError && (
@@ -1098,7 +1054,7 @@ export default function InvestorDashboard() {
                                             Cancel
                                         </Button>
                                         <Button type="submit" disabled={topUpLoading || !topUpAccountId || !topUpFundId || !topUpAmount} className="flex-1">
-                                            {topUpLoading ? 'Submitting...' : 'Submit Deposit Request'}
+                                            {topUpLoading ? 'Generating...' : 'Generate Demo PayNow QR'}
                                         </Button>
                                     </div>
                                 </form>

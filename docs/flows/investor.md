@@ -1,5 +1,9 @@
 # Investor Flows
 
+> Historical detail only. Investor direct-security and wallet flows have been
+> superseded by the fund subscription/redemption model in
+> [Authoritative Fund Portal Workflow](../FUND_PORTAL_WORKFLOW.md).
+
 ## 1. Onboarding Flow
 
 ```mermaid

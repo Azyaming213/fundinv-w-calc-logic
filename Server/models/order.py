@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Numeric, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -7,7 +7,10 @@ from database import Base
 
 class Order(Base):
     __tablename__ = "orders"
-    __table_args__ = {"schema": "fundinv"}
+    __table_args__ = (
+        UniqueConstraint("alpaca_order_id", name="uq_orders_alpaca_order_id"),
+        {"schema": "fundinv"},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     investor_id = Column(Integer, ForeignKey("fundinv.investors.id"), nullable=False, index=True)
@@ -20,6 +23,7 @@ class Order(Base):
     filled_qty = Column(Numeric(18, 8), nullable=True)
     filled_price = Column(Numeric(18, 8), nullable=True)
     status = Column(String(20), nullable=False, default="new")
+    accounting_recorded_at = Column(DateTime(timezone=True), nullable=True)
     performed_by_user_id = Column(Integer, ForeignKey("fundinv_auth.users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

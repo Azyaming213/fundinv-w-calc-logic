@@ -40,6 +40,12 @@ const tabs = [
     ),
   },
   {
+    label: 'Valuations',
+    href: '/dashboard/admin/valuations',
+    claim: CLAIMS.readAuditLogs,
+    icon: <span className="text-xs">NAV</span>,
+  },
+  {
     label: 'Transactions',
     href: '/dashboard/admin/transactions',
     claim: CLAIMS.readTransactions,

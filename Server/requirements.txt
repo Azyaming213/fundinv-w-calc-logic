@@ -16,5 +16,5 @@ pyotp
 qrcode[pil]
 pillow
 apscheduler
-weasyprint
+reportlab
 alembic

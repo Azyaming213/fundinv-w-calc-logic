@@ -27,7 +27,6 @@ INSERT INTO fundinv_auth.role_claims (role_id, claim_key) VALUES
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'readOwnFundFlows'),
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'createFeedback'),
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'readOwnFeedback'),
-    ((SELECT id FROM fundinv_auth.roles WHERE name = 'investor'), 'executeTrades'),
     -- manager claims
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'manager'), 'readDashboard'),
     ((SELECT id FROM fundinv_auth.roles WHERE name = 'manager'), 'readFunds'),
@@ -191,13 +190,6 @@ INSERT INTO fundinv.funds (name, ticker, description, fund_type, strategy, asset
 ('Schwab US Dividend Equity ETF', 'SCHD', 'Tracks high-quality dividend stocks', 'etf', 'income', 'stock', 'low-medium', NULL, TRUE),
 ('Direxion Daily Semiconductor Bull 3X', 'SOXL', '3x leveraged semiconductor ETF', 'etf', 'aggressive', 'etf', 'high', (SELECT id FROM fundinv.managers WHERE email = 'manager@fundinv.com'), TRUE),
 ('ProShares UltraPro QQQ', 'TQQQ', '3x leveraged Nasdaq-100 ETF', 'etf', 'aggressive', 'etf', 'high', NULL, TRUE),
-('Advanced Micro Devices Inc', 'AMD', 'Semiconductor company stock', 'stock', 'aggressive', 'stock', 'high', NULL, TRUE),
-('NVIDIA Corporation', 'NVDA', 'AI and GPU company stock', 'stock', 'aggressive', 'stock', 'high', (SELECT id FROM fundinv.managers WHERE email = 'manager@fundinv.com'), TRUE),
-('Tesla Inc', 'TSLA', 'Electric vehicle and clean energy company', 'stock', 'aggressive', 'stock', 'high', NULL, TRUE),
-('Coinbase Global Inc', 'COIN', 'Cryptocurrency exchange stock', 'stock', 'aggressive', 'stock', 'high', NULL, TRUE),
-('Apple Inc', 'AAPL', 'Technology company stock', 'stock', 'growth', 'stock', 'medium', NULL, TRUE),
-('Microsoft Corporation', 'MSFT', 'Technology company stock', 'stock', 'growth', 'stock', 'medium', NULL, TRUE),
-('Amazon.com Inc', 'AMZN', 'E-commerce and cloud company stock', 'stock', 'growth', 'stock', 'medium', NULL, TRUE),
 ('iShares 20+ Year Treasury Bond', 'TLT', 'Long-term US treasury bonds', 'etf', 'conservative', 'bond', 'low', NULL, TRUE),
 ('Schwab Short-Term US Treasury ETF', 'SCHR', 'Short-term US treasury bonds', 'etf', 'conservative', 'bond', 'low', NULL, TRUE),
 ('Vanguard Dividend Appreciation ETF', 'VIG', 'Focuses on dividend growth stocks', 'etf', 'income', 'stock', 'low-medium', NULL, TRUE)
@@ -424,8 +416,8 @@ INSERT INTO fundinv.audit_logs (user_id, action, details, entity_type, entity_id
 ),
 (
     (SELECT id FROM fundinv_auth.users WHERE email = 'manager@fundinv.com'),
-    'fund_create', 'Created new fund NVDA', 'fund',
-    (SELECT id FROM fundinv.funds WHERE ticker = 'NVDA'),
+    'fund_create', 'Created new fund SOXL', 'fund',
+    (SELECT id FROM fundinv.funds WHERE ticker = 'SOXL'),
     'success', '127.0.0.1', 'Mozilla/5.0'
 ),
 (

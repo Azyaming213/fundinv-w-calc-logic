@@ -1,5 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from jobs.email_jobs import send_weekly_summaries, send_monthly_performance
 from jobs.cleanup_jobs import cleanup_security_state, expire_unused_invites
 from jobs.reconcile_job import run_daily_reconciliation
@@ -47,6 +48,13 @@ def start_scheduler():
         run_daily_reconciliation,
         CronTrigger(hour=4, minute=0),
         id="daily_reconciliation",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        run_daily_reconciliation,
+        IntervalTrigger(minutes=1),
+        id="order_fill_reconciliation",
         replace_existing=True,
     )
 

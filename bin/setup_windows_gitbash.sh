@@ -6,11 +6,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_DIR="$ROOT_DIR/Server"
 CLIENT_DIR="$ROOT_DIR/Client"
-CONTAINER_NAME="${FUNDINV_DB_CONTAINER:-fundinv}"
+CONTAINER_NAME="${FUNDINV_DB_CONTAINER:-fundinv-current}"
 DB_USER="${FUNDINV_DB_USER:-postgres}"
 DB_PASSWORD="${FUNDINV_DB_PASSWORD:-postgres}"
 DB_NAME="${FUNDINV_DB_NAME:-fundinv}"
-DB_PORT="${FUNDINV_DB_PORT:-5432}"
+DB_PORT="${FUNDINV_DB_PORT:-5434}"
 
 # Prevent Git Bash from rewriting Linux paths intended for commands inside
 # the PostgreSQL container, without breaking Windows paths passed to Python.
@@ -110,23 +110,18 @@ if [[ "${INSTALL_PLAYWRIGHT:-0}" == "1" ]]; then
 fi
 
 echo "[6/6] Verifying the setup"
-(cd "$SERVER_DIR" && ./venv/Scripts/python.exe -m compileall -q .)
+(cd "$SERVER_DIR" && ./venv/Scripts/python.exe -m unittest discover -s tests -v)
 (cd "$CLIENT_DIR" && npm run lint)
+(cd "$CLIENT_DIR" && NODE_OPTIONS=--max-old-space-size=2048 npm run build -- --webpack)
 
 cat <<'EOF'
 
 FundInv setup completed for Windows Git Bash.
 
-Start two Git Bash windows.
-
-Window 1:
-  cd Server
-  ./venv/Scripts/python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
-
-Window 2:
-  cd Client
-  npm run dev
+From the fundinv-solo directory, start both services with:
+  bash bin/run.sh
 
 Open http://localhost:3000 and http://localhost:8000/docs.
-Provider-backed features require Stripe test, Alpaca paper and SMTP credentials in .env.
+Manual fund-flow accounting works without Stripe. Stripe settlement, Alpaca paper orders,
+and email delivery require their corresponding credentials in .env.
 EOF

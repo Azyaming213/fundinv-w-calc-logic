@@ -15,6 +15,7 @@ from models import (
     FundValuation,
     InvestmentAccount,
 )
+from services.valuation_service import append_settled_flow_to_finalized_valuation
 
 
 MONEY = Decimal("0.0001")
@@ -38,6 +39,11 @@ def _decimal(value, default: str = "0") -> Decimal:
 
 
 def current_nav_per_unit(db: Session, fund: Fund) -> Decimal:
+    # A flow is processed after the day's market P&L, so subscriptions and
+    # redemptions must use the current closing NAV. Preferring yesterday's
+    # valuation here would issue too many/few units and dilute existing owners.
+    if fund.current_price and _decimal(fund.current_price) > 0:
+        return _decimal(fund.current_price).quantize(NAV)
     latest = (
         db.query(FundValuation)
         .filter(FundValuation.fund_id == fund.id)
@@ -46,9 +52,26 @@ def current_nav_per_unit(db: Session, fund: Fund) -> Decimal:
     )
     if latest and _decimal(latest.nav_per_unit) > 0:
         return _decimal(latest.nav_per_unit).quantize(NAV)
-    if fund.current_price and _decimal(fund.current_price) > 0:
-        return _decimal(fund.current_price).quantize(NAV)
     return Decimal("1.00000000")
+
+
+def _sync_account_balance_cache(db: Session, account: InvestmentAccount) -> None:
+    """Rebuild the legacy JSON mirror from authoritative unit positions."""
+    positions = (
+        db.query(FundPosition)
+        .filter(FundPosition.investment_account_id == account.id)
+        .all()
+    )
+    balances: dict[str, str] = {}
+    for held_position in positions:
+        held_fund = db.query(Fund).filter(Fund.id == held_position.fund_id).one()
+        held_nav = current_nav_per_unit(db, held_fund)
+        held_value = (_decimal(held_position.units) * held_nav).quantize(
+            MONEY, rounding=ROUND_HALF_UP
+        )
+        balances[str(held_position.fund_id)] = str(held_value)
+    account.manager_fund_balance = balances
+    flag_modified(account, "manager_fund_balance")
 
 
 def settle_fund_flow(
@@ -142,24 +165,26 @@ def settle_fund_flow(
         )
         position.units = max(Decimal("0"), remaining_units)
         position.cost_basis = max(Decimal("0"), current_cost - cost_reduction)
+        account.total_invested = max(
+            Decimal("0"), _decimal(account.total_invested) - cost_reduction
+        )
         signed_amount = -amount
         entry_type = "withdrawal_redeemed"
 
     resulting_units = _decimal(position.units)
     resulting_value = (resulting_units * nav).quantize(MONEY, rounding=ROUND_HALF_UP)
 
-    # Compatibility mirror for existing screens; normalized FundPosition is authoritative.
-    balances = dict(account.manager_fund_balance or {})
-    balances[str(fund.id)] = str(resulting_value)
-    account.manager_fund_balance = balances
-    flag_modified(account, "manager_fund_balance")
+    # Compatibility mirror for older screens. Rebuild every fund so a legacy
+    # missing/stale key cannot survive an otherwise valid settlement.
+    db.flush()
+    _sync_account_balance_cache(db, account)
 
     flow.status = "completed"
     flow.processed_at = datetime.now(timezone.utc)
     if provider_reference:
         flow.provider_reference = provider_reference
 
-    db.add(FundBalanceEntry(
+    balance_entry = FundBalanceEntry(
         investment_account_id=account.id,
         fund_id=fund.id,
         fund_flow_id=flow.id,
@@ -168,7 +193,9 @@ def settle_fund_flow(
         units=units_delta,
         nav_per_unit=nav,
         provider_reference=provider_reference,
-    ))
+    )
+    db.add(balance_entry)
     db.flush()
+    append_settled_flow_to_finalized_valuation(db, balance_entry)
 
     return SettlementResult(True, units_delta, nav, resulting_units, resulting_value)

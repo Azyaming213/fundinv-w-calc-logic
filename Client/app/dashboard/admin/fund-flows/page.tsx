@@ -87,7 +87,7 @@ export default function FundFlowsPage() {
     <div className="max-w-6xl mx-auto px-8 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-fundinv-primary">Fund Flows</h1>
-        <p className="text-sm text-fundinv-muted mt-1">View deposit and withdrawal requests (read-only)</p>
+        <p className="text-sm text-fundinv-muted mt-1">Audit fund subscription and redemption requests (read-only)</p>
       </div>
 
       <Card>
@@ -110,8 +110,8 @@ export default function FundFlowsPage() {
               className="px-3 py-2 text-sm border border-fundinv-border rounded-md text-fundinv-primary bg-white focus:outline-none focus:ring-2 focus:ring-fundinv-accent"
             >
               <option value="">All Types</option>
-              <option value="deposit">Deposit</option>
-              <option value="withdrawal">Withdrawal</option>
+              <option value="deposit">Subscription</option>
+              <option value="withdrawal">Redemption</option>
             </select>
 
             <select
@@ -162,7 +162,7 @@ export default function FundFlowsPage() {
                         <span className={`px-2 py-1 text-xs font-medium rounded capitalize ${
                           flow.flow_type === 'deposit' ? 'text-fundinv-accent bg-blue-50' : 'text-fundinv-warning bg-amber-50'
                         }`}>
-                          {flow.flow_type}
+                          {flow.flow_type === 'deposit' ? 'subscription' : flow.flow_type === 'withdrawal' ? 'redemption' : flow.flow_type}
                         </span>
                       </td>
                       <td className="py-3 px-2 text-right font-mono text-fundinv-primary">

@@ -1,6 +1,6 @@
 import csv
 from io import StringIO
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
@@ -11,9 +11,11 @@ from database import get_db
 from models import User, Investor, InvestmentAccount, Manager, Fund, FundPosition, FundValuation, Order, FundInvestment, FundTargeting, FundComponent
 from schemas.auth_schema import StandardResponse
 from dependencies import get_current_user, require_claim
-from services.alpaca_service import place_order, get_positions, search_assets, get_snapshots
+from services.alpaca_service import place_order, get_order, get_positions, search_assets, get_snapshots
 from services.audit_service import log_event, AUDIT_ACTIONS
 from services.pnl_service import compute_fund_return
+from services.order_accounting_service import apply_filled_order
+from services.valuation_service import finalize_valuation, preview_valuation
 import appconstants as AppConstants
 
 from pydantic import BaseModel, Field
@@ -32,8 +34,137 @@ class WhatIfRequest(BaseModel):
     allocations: list[WhatIfAllocation]
 
 
+class DailyValuationRequest(BaseModel):
+    fund_id: int
+    valuation_date: date
+    daily_pnl: float
+    notes: str | None = Field(default=None, max_length=1000)
+
+
 def _managed_funds(db: Session, manager: Manager) -> list[Fund]:
     return db.query(Fund).filter(Fund.creator_manager_id == manager.id).order_by(Fund.name).all()
+
+
+def _managed_approved_fund(db: Session, manager: Manager, fund_id: int) -> Fund:
+    fund = db.query(Fund).filter(
+        Fund.id == fund_id,
+        Fund.creator_manager_id == manager.id,
+        Fund.fund_type != "stock",
+        Fund.is_active == True,
+        Fund.review_status == "approved",
+    ).first()
+    if not fund:
+        raise HTTPException(status_code=404, detail="Active approved managed fund not found")
+    return fund
+
+
+def _enrich_allocations(db: Session, preview: dict) -> dict:
+    investor_ids = {row["investor_id"] for row in preview["allocations"]}
+    investors = {
+        investor.id: investor
+        for investor in db.query(Investor).filter(Investor.id.in_(investor_ids)).all()
+    } if investor_ids else {}
+    for row in preview["allocations"]:
+        investor = investors.get(row["investor_id"])
+        row["investor_name"] = investor.full_name if investor else "Unknown"
+        row["investor_email"] = investor.email if investor else None
+    return preview
+
+
+@router.post("/valuations/preview", response_model=StandardResponse)
+def preview_daily_valuation(
+    request: DailyValuationRequest,
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["updateFunds"])),
+    db: Session = Depends(get_db),
+):
+    manager = _get_manager(db, current_user.email)
+    if manager is None:
+        raise HTTPException(status_code=404, detail="Manager profile not found")
+    fund = _managed_approved_fund(db, manager, request.fund_id)
+    try:
+        result = preview_valuation(db, fund, request.valuation_date, request.daily_pnl)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return StandardResponse(success=True, data=_enrich_allocations(db, result), error=None)
+
+
+@router.post("/valuations/finalize", response_model=StandardResponse)
+def finalize_daily_valuation(
+    request: DailyValuationRequest,
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["updateFunds"])),
+    db: Session = Depends(get_db),
+):
+    manager = _get_manager(db, current_user.email)
+    if manager is None:
+        raise HTTPException(status_code=404, detail="Manager profile not found")
+    fund = _managed_approved_fund(db, manager, request.fund_id)
+    try:
+        valuation, result = finalize_valuation(
+            db, fund, request.valuation_date, request.daily_pnl, current_user.id, request.notes,
+        )
+        log_event(
+            db=db,
+            user_id=current_user.id,
+            action=AUDIT_ACTIONS["FUND_VALUATION_FINALIZED"],
+            details=f"Finalized {fund.name} valuation for {request.valuation_date}",
+            entity_type="fund_valuation",
+            entity_id=valuation.id,
+            changes={
+                "fund_id": fund.id,
+                "valuation_date": request.valuation_date.isoformat(),
+                "daily_pnl": result["daily_pnl"],
+                "nav_per_unit": result["nav_per_unit"],
+            },
+            status="success",
+            commit=False,
+        )
+        db.commit()
+        db.refresh(valuation)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = _enrich_allocations(db, result)
+    result["valuation_id"] = valuation.id
+    result["status"] = valuation.status
+    result["source"] = valuation.source
+    result["finalized_at"] = valuation.finalized_at.isoformat()
+    return StandardResponse(success=True, data=result, error=None)
+
+
+@router.get("/valuations", response_model=StandardResponse)
+def list_manager_valuations(
+    fund_id: int | None = Query(None),
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["readAssignedInvestors"])),
+    db: Session = Depends(get_db),
+):
+    manager = _get_manager(db, current_user.email)
+    if manager is None:
+        raise HTTPException(status_code=404, detail="Manager profile not found")
+    fund_ids = [fund.id for fund in _managed_funds(db, manager)]
+    query = db.query(FundValuation).filter(FundValuation.fund_id.in_(fund_ids)) if fund_ids else db.query(FundValuation).filter(False)
+    if fund_id is not None:
+        if fund_id not in fund_ids:
+            raise HTTPException(status_code=404, detail="Managed fund not found")
+        query = query.filter(FundValuation.fund_id == fund_id)
+    rows = query.order_by(FundValuation.valuation_date.desc()).limit(100).all()
+    return StandardResponse(success=True, data={"valuations": [{
+        "id": row.id,
+        "fund_id": row.fund_id,
+        "fund_name": row.fund.name,
+        "valuation_date": row.valuation_date.isoformat(),
+        "opening_assets": float(row.opening_assets),
+        "daily_pnl": float(row.daily_pnl),
+        "closing_assets_before_flows": float(row.closing_assets_before_flows),
+        "net_flow": float(row.net_flow),
+        "closing_assets": float(row.closing_assets),
+        "units_outstanding": float(row.units_outstanding),
+        "nav_per_unit": float(row.nav_per_unit),
+        "status": row.status,
+        "source": row.source,
+        "finalized_by_name": row.finalized_by.full_name if row.finalized_by else "System",
+        "finalized_at": row.finalized_at.isoformat() if row.finalized_at else None,
+        "notes": row.notes,
+    } for row in rows]}, error=None)
 
 
 @router.get("/performance-analysis", response_model=StandardResponse)
@@ -233,8 +364,8 @@ def manager_trade_for_investor(
     investor_id: int,
     symbol: str,
     side: str,
-    amount: float,
-    investment_account_id: int,
+    amount: float = Query(..., gt=0),
+    investment_account_id: int = Query(...),
     fund_id: int | None = None,
     current_user: User = Depends(require_claim(AppConstants.CLAIMS["executeTrades"])),
     db: Session = Depends(get_db),
@@ -251,6 +382,16 @@ def manager_trade_for_investor(
 
     if side not in ("buy", "sell"):
         raise HTTPException(status_code=400, detail="Side must be 'buy' or 'sell'")
+    if fund_id is None:
+        raise HTTPException(status_code=400, detail="A managed fund is required for every underlying trade")
+    fund = db.query(Fund).filter(
+        Fund.id == fund_id,
+        Fund.creator_manager_id == manager.id,
+        Fund.is_active == True,
+        Fund.review_status == "approved",
+    ).first()
+    if not fund:
+        raise HTTPException(status_code=404, detail="Managed fund not found")
 
     account = db.query(InvestmentAccount).filter(
         InvestmentAccount.id == investment_account_id,
@@ -260,41 +401,17 @@ def manager_trade_for_investor(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    from sqlalchemy.orm.attributes import flag_modified
-
     if side == "buy":
-        if fund_id:
-            mfb = dict(account.manager_fund_balance or {})
-            available = float(mfb.get(str(fund_id), 0))
-            if available < amount:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Insufficient fund balance. Available in fund: ${available:,.2f}, requested: ${amount:,.2f}",
-                )
-            mfb[str(fund_id)] = available - amount
-            account.manager_fund_balance = mfb
-            flag_modified(account, "manager_fund_balance")
-
-            allocs = dict(account.fund_allocations or {})
-            allocs[symbol] = float(allocs.get(symbol, 0)) + amount
-            account.fund_allocations = allocs
-            flag_modified(account, "fund_allocations")
-        else:
-            mfb = dict(account.manager_fund_balance or {})
-            available = float(mfb.get("_unallocated", 0))
-            if available < amount:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Insufficient unallocated balance. Available: ${available:,.2f}, needed: ${amount:,.2f}",
-                )
-            mfb["_unallocated"] = available - amount
-            account.manager_fund_balance = mfb
-            flag_modified(account, "manager_fund_balance")
-
-            allocs = dict(account.fund_allocations or {})
-            allocs[symbol] = float(allocs.get(symbol, 0)) + amount
-            account.fund_allocations = allocs
-            flag_modified(account, "fund_allocations")
+        mfb = dict(account.manager_fund_balance or {})
+        fund_value = float(mfb.get(str(fund_id), 0))
+        allocs = dict(account.fund_allocations or {})
+        allocated = sum(float(value) for value in allocs.values())
+        available = max(0.0, fund_value - allocated)
+        if available < amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient unallocated capital in {fund.name}. Available: ${available:,.2f}, requested: ${amount:,.2f}",
+            )
     else:
         position = get_positions()
         pos_data = next((p for p in position if p.get("symbol") == symbol), None) if isinstance(position, list) else None
@@ -303,15 +420,6 @@ def manager_trade_for_investor(
         if sell_amount <= 0:
             raise HTTPException(status_code=400, detail=f"No position to sell for {symbol}")
 
-        allocs = dict(account.fund_allocations or {})
-        allocs[symbol] = max(0, float(allocs.get(symbol, 0)) - sell_amount)
-        account.fund_allocations = allocs
-        flag_modified(account, "fund_allocations")
-
-        mfb = dict(account.manager_fund_balance or {})
-        mfb["_unallocated"] = float(mfb.get("_unallocated", 0)) + sell_amount
-        account.manager_fund_balance = mfb
-        flag_modified(account, "manager_fund_balance")
         amount = sell_amount
 
     alpaca_result = place_order(symbol=symbol, notional=amount, side=side)
@@ -321,20 +429,42 @@ def manager_trade_for_investor(
             detail=f"Alpaca order failed: {alpaca_result.get('message', 'Unknown error')}",
         )
 
+    external_id = alpaca_result.get("id")
+    if not external_id:
+        raise HTTPException(status_code=502, detail="Alpaca accepted no identifiable order")
+    filled_qty = float(alpaca_result.get("filled_qty") or 0) or None
+    filled_price = float(alpaca_result.get("filled_avg_price") or 0) or None
     order = Order(
         investor_id=investor_id,
         investment_account_id=account.id,
         fund_id=fund_id,
-        alpaca_order_id=alpaca_result.get("id", ""),
+        alpaca_order_id=external_id,
         symbol=symbol,
         side=side,
         amount=amount,
+        filled_qty=filled_qty,
+        filled_price=filled_price,
         status=alpaca_result.get("status", "accepted"),
         performed_by_user_id=current_user.id,
     )
     db.add(order)
+    # Persist the external order first. A later fill-accounting failure must
+    # never create an untraceable order that exists only at Alpaca.
     db.commit()
     db.refresh(order)
+
+    provider_order = alpaca_result
+    if alpaca_result.get("status") != "filled":
+        provider_order = get_order(external_id) or alpaca_result
+    accounting_applied = False
+    try:
+        accounting_applied = apply_filled_order(db, order, provider_order)
+        db.commit()
+        db.refresh(order)
+    except Exception:
+        db.rollback()
+        # The durable Order remains pending and the reconciliation worker will
+        # retry. Return success because the external submission did succeed.
 
     log_event(
         db=db,
@@ -360,7 +490,8 @@ def manager_trade_for_investor(
         "symbol": symbol,
         "side": side,
         "amount": amount,
-        "status": alpaca_result.get("status"),
+        "status": order.status,
+        "accounting_status": "recorded" if order.accounting_recorded_at else "pending_fill_reconciliation",
     }, error=None)
 
 

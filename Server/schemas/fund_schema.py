@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
@@ -32,7 +32,7 @@ class FundListResponse(BaseModel):
 
 class InvestRequest(BaseModel):
     fund_id: int
-    amount: float
+    amount: float = Field(..., gt=0)
     investment_account_id: int
 
 

@@ -15,6 +15,7 @@ from schemas.auth_schema import StandardResponse
 from schemas.portfolio_schema import CreateAccountRequest, UpdateAccountRequest
 from services.audit_service import log_event
 from services.pnl_service import compute_investor_pnl, compute_fund_return, compute_unrealized_pnl, snapshot_daily_holdings
+from services.portfolio_pdf_service import build_portfolio_pdf
 from config import settings
 import appconstants as AppConstants
 
@@ -28,6 +29,42 @@ def _get_investor(db: Session, email: str) -> Investor:
     if not investor:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investor not found")
     return investor
+
+
+@router.get("/valuation-history", response_model=StandardResponse)
+def investor_valuation_history(
+    fund_id: int | None = Query(None),
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["readOwnPortfolio"])),
+    db: Session = Depends(get_db),
+):
+    investor = _get_investor(db, current_user.email)
+    query = db.query(PortfolioHolding).filter(PortfolioHolding.investor_id == investor.id)
+    if fund_id is not None:
+        query = query.filter(PortfolioHolding.fund_id == fund_id)
+    holdings = query.order_by(PortfolioHolding.snapshot_date.desc()).limit(200).all()
+    rows = []
+    for holding in holdings:
+        valuation = db.query(FundValuation).filter_by(
+            fund_id=holding.fund_id, valuation_date=holding.snapshot_date
+        ).first()
+        rows.append({
+            "id": holding.id,
+            "fund_id": holding.fund_id,
+            "fund_name": holding.fund.name if holding.fund else "Unknown",
+            "valuation_date": holding.snapshot_date.isoformat(),
+            "opening_value": float(holding.opening_value or 0),
+            "opening_share_pct": float(holding.opening_shareholding_pct or 0),
+            "allocated_pnl": float(holding.daily_pnl or 0),
+            "closing_value_before_flows": float(holding.closing_value_before_flows or 0),
+            "net_flow": float(holding.net_flow or 0),
+            "closing_value": float(holding.account_value or 0),
+            "closing_units": float(holding.units or 0),
+            "nav_per_unit": float(holding.nav_per_unit or 0),
+            "closing_share_pct": float(holding.shareholding_pct or 0),
+            "valuation_status": valuation.status if valuation else "legacy",
+            "valuation_source": valuation.source if valuation else "legacy",
+        })
+    return StandardResponse(success=True, data={"valuations": rows}, error=None)
 
 
 @router.get("/chart-data", response_model=dict)
@@ -195,6 +232,7 @@ def get_summary(current_user: User = Depends(require_claim(AppConstants.CLAIMS["
             "accounts": account_list,
             "pnl": pnl_report,
             "today_pnl": float(today_pnl),
+            "pnl_as_of_date": latest_snapshot_date.isoformat() if latest_snapshot_date else None,
             "unrealized": unrealized,
         },
         error=None,
@@ -576,11 +614,6 @@ def export_portfolio_pdf(
         .all()
     )
 
-    total_invested = sum(float(a.total_invested) for a in accounts)
-    total_current_value = sum(float(a.current_value) for a in accounts)
-    total_fund_balance = sum(float(v) for a in accounts for v in (a.manager_fund_balance or {}).values())
-    total_account_value = total_current_value + total_fund_balance
-
     txns = (
         db.query(InvestmentTransaction)
         .filter(InvestmentTransaction.investor_id == investor.id)
@@ -589,106 +622,7 @@ def export_portfolio_pdf(
         .all()
     )
 
-    account_rows = ""
-    for a in accounts:
-        mfb_total = sum(float(v) for v in (a.manager_fund_balance or {}).values())
-        account_rows += f"""
-        <tr>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">{a.account_name}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">{a.account_number or 'N/A'}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">{a.investment_strategy or 'N/A'}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${float(a.total_invested):,.2f}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${float(a.current_value):,.2f}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${mfb_total:,.2f}</td>
-        </tr>"""
-
-    txn_rows = ""
-    for t in txns:
-        color = "#10b981" if (t.net_pnl or 0) >= 0 else "#ef4444"
-        txn_rows += f"""
-        <tr>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0">{t.symbol}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:center">{t.trade_type}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">{t.volume}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">${float(t.price):,.2f}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right;color:{color}">${float(t.net_pnl or 0):,.2f}</td>
-          <td style="padding:6px 10px;border-bottom:1px solid #e2e8f0;text-align:right">{t.trade_time.strftime('%Y-%m-%d %H:%M') if t.trade_time else 'N/A'}</td>
-        </tr>"""
-
-    now_str = datetime.now(timezone.utc).strftime("%B %d, %Y %H:%M UTC")
-
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="utf-8"><title>FundInv Portfolio Report</title></head>
-    <body style="font-family:Arial,sans-serif;color:#1e293b;margin:20px">
-      <div style="border-bottom:3px solid #2563eb;padding-bottom:12px;margin-bottom:20px">
-        <h1 style="margin:0;font-size:20px;color:#2563eb">FundInv Portfolio Report</h1>
-        <p style="margin:4px 0 0;font-size:12px;color:#64748b">Generated: {now_str}</p>
-      </div>
-
-      <div style="margin-bottom:20px">
-        <h2 style="font-size:14px;color:#475569;margin:0 0 4px">Investor</h2>
-        <p style="margin:0;font-size:12px"><strong>{investor.full_name}</strong> &mdash; {investor.email}</p>
-      </div>
-
-      <h2 style="font-size:14px;color:#475569;margin:0 0 8px">Account Summary</h2>
-      <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:24px">
-        <tbody>
-          <tr>
-            <td style="padding:10px;background:#f0f9ff;border:1px solid #bae6fd;width:25%"><strong>Total Value</strong><br>${total_account_value:,.2f}</td>
-            <td style="padding:10px;background:#f8fafc;border:1px solid #e2e8f0;width:25%"><strong>Invested</strong><br>${total_current_value:,.2f}</td>
-            <td style="padding:10px;background:#f8fafc;border:1px solid #e2e8f0;width:25%"><strong>Fund Balance</strong><br>${total_fund_balance:,.2f}</td>
-            <td style="padding:10px;background:#f8fafc;border:1px solid #e2e8f0;width:25%"><strong>Accounts</strong><br>{len(accounts)}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2 style="font-size:14px;color:#475569;margin:0 0 8px">Investment Accounts</h2>
-      <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:24px">
-        <thead>
-          <tr style="background:#f1f5f9">
-            <th style="padding:6px 10px;text-align:left">Account</th>
-            <th style="padding:6px 10px;text-align:left">Number</th>
-            <th style="padding:6px 10px;text-align:left">Strategy</th>
-            <th style="padding:6px 10px;text-align:right">Invested</th>
-            <th style="padding:6px 10px;text-align:right">Value</th>
-            <th style="padding:6px 10px;text-align:right">Fund Balance</th>
-          </tr>
-        </thead>
-        <tbody>{account_rows if account_rows else '<tr><td colspan="6" style="padding:12px;text-align:center;color:#94a3b8">No accounts</td></tr>'}</tbody>
-      </table>
-
-      <h2 style="font-size:14px;color:#475569;margin:0 0 8px">Recent Transactions</h2>
-      <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:24px">
-        <thead>
-          <tr style="background:#f1f5f9">
-            <th style="padding:6px 10px;text-align:left">Symbol</th>
-            <th style="padding:6px 10px;text-align:center">Type</th>
-            <th style="padding:6px 10px;text-align:right">Qty</th>
-            <th style="padding:6px 10px;text-align:right">Price</th>
-            <th style="padding:6px 10px;text-align:right">P&L</th>
-            <th style="padding:6px 10px;text-align:right">Date</th>
-          </tr>
-        </thead>
-        <tbody>{txn_rows if txn_rows else '<tr><td colspan="6" style="padding:12px;text-align:center;color:#94a3b8">No transactions</td></tr>'}</tbody>
-      </table>
-
-      <div style="border-top:1px solid #e2e8f0;padding-top:12px;text-align:center">
-        <p style="font-size:10px;color:#94a3b8">FundInv &mdash; Confidential Portfolio Report</p>
-      </div>
-    </body>
-    </html>
-    """
-
-    try:
-        from weasyprint import HTML
-        pdf_bytes = HTML(string=html).write_pdf()
-    except ImportError:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="PDF generation not available. Install weasyprint.",
-        )
+    pdf_bytes = build_portfolio_pdf(investor, accounts, txns)
 
     filename = f"FundInv_Portfolio_{investor.full_name.replace(' ', '_')}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.pdf"
 

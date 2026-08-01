@@ -40,6 +40,12 @@ const tabs = [
     ),
   },
   {
+    label: 'P&L Allocations',
+    href: '/dashboard/investor/valuations',
+    claim: CLAIMS.readOwnPortfolio,
+    icon: <span className="text-xs">NAV</span>,
+  },
+  {
     label: 'Articles',
     href: '/dashboard/investor/articles',
     claim: CLAIMS.readArticles,

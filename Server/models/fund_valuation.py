@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, UniqueConstraint
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -24,6 +24,12 @@ class FundValuation(Base):
     closing_assets = Column(Numeric(precision=18, scale=4), nullable=False)
     units_outstanding = Column(Numeric(precision=28, scale=10), nullable=False)
     nav_per_unit = Column(Numeric(precision=18, scale=8), nullable=False)
+    status = Column(String(20), nullable=False, default="finalized")
+    source = Column(String(30), nullable=False, default="scheduled_snapshot")
+    finalized_by_user_id = Column(Integer, ForeignKey("fundinv_auth.users.id"), nullable=True)
+    finalized_at = Column(DateTime(timezone=True), nullable=True)
+    notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     fund = relationship("Fund")
+    finalized_by = relationship("User")
