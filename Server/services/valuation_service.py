@@ -33,6 +33,41 @@ def _previous_valuation(db: Session, fund_id: int, valuation_date: date) -> Fund
     )
 
 
+def settlement_valuation_status(
+    db: Session,
+    fund_id: int,
+    settlement_date: date | None = None,
+) -> tuple[bool, str | None]:
+    """Return whether a unit-changing flow may settle on the given date.
+
+    A brand-new fund with no valuation history may accept its first
+    subscription. Once daily valuation has started, every later settlement
+    must use that day's finalized NAV so subscriptions and redemptions cannot
+    dilute the opening owners or make the Manager's P&L allocation impossible.
+    """
+    settlement_date = settlement_date or datetime.now(timezone.utc).date()
+    prior_valuation = db.query(FundValuation.id).filter(
+        FundValuation.fund_id == fund_id,
+        FundValuation.status == "finalized",
+        FundValuation.valuation_date < settlement_date,
+    ).first()
+    if prior_valuation is None:
+        return True, None
+
+    current_valuation = db.query(FundValuation.id).filter(
+        FundValuation.fund_id == fund_id,
+        FundValuation.status == "finalized",
+        FundValuation.valuation_date == settlement_date,
+    ).first()
+    if current_valuation is not None:
+        return True, None
+
+    return False, (
+        f"Manager must finalize {settlement_date.isoformat()} P&L/NAV for this fund "
+        "before Operations can settle subscriptions or redemptions."
+    )
+
+
 def preview_valuation(db: Session, fund: Fund, valuation_date: date, daily_pnl: Decimal) -> dict:
     existing = db.query(FundValuation).filter_by(
         fund_id=fund.id, valuation_date=valuation_date

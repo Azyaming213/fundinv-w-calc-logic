@@ -23,7 +23,7 @@ from decimal import Decimal
 from typing import Optional
 import uuid
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from models import (
@@ -491,8 +491,18 @@ def compute_investor_pnl(
         db.query(PortfolioHolding)
         .filter(
             PortfolioHolding.investor_id == investor_id,
-            PortfolioHolding.holding_date >= start_date,
-            PortfolioHolding.holding_date <= end_date,
+            or_(
+                and_(
+                    PortfolioHolding.snapshot_date.is_not(None),
+                    PortfolioHolding.snapshot_date >= start_date.date(),
+                    PortfolioHolding.snapshot_date <= end_date.date(),
+                ),
+                and_(
+                    PortfolioHolding.snapshot_date.is_(None),
+                    PortfolioHolding.holding_date >= start_date,
+                    PortfolioHolding.holding_date <= end_date,
+                ),
+            ),
         )
         .order_by(PortfolioHolding.holding_date.asc())
         .all()
@@ -537,23 +547,132 @@ def compute_investor_pnl(
         holding_day = holding.snapshot_date or holding.holding_date.date()
         holdings_by_date.setdefault(holding_day, []).append(holding)
 
+    # A fund is not necessarily valued every day.  Using only the holdings
+    # snapshotted on a given day makes the investor's return denominator too
+    # small whenever their other funds simply carried forward unchanged.  Use
+    # each fund's latest known closing value (or its first future opening value)
+    # so every invested fund is represented in that day's opening portfolio.
+    all_holdings = (
+        db.query(PortfolioHolding)
+        .filter(PortfolioHolding.investor_id == investor_id)
+        .order_by(PortfolioHolding.holding_date.asc())
+        .all()
+    )
+    holdings_by_fund: dict[Optional[int], list[PortfolioHolding]] = {}
+    for holding in all_holdings:
+        holdings_by_fund.setdefault(holding.fund_id, []).append(holding)
+
+    account_ids = [
+        row[0]
+        for row in db.query(InvestmentAccount.id)
+        .filter(
+            InvestmentAccount.investor_id == investor_id,
+            InvestmentAccount.deleted_at.is_(None),
+        )
+        .all()
+    ]
+    balance_entries = (
+        db.query(FundBalanceEntry)
+        .filter(FundBalanceEntry.investment_account_id.in_(account_ids))
+        .order_by(FundBalanceEntry.created_at.asc())
+        .all()
+        if account_ids else []
+    )
+    entries_by_fund: dict[int, list[FundBalanceEntry]] = {}
+    for entry in balance_entries:
+        entries_by_fund.setdefault(entry.fund_id, []).append(entry)
+
+    def holding_day(row: PortfolioHolding) -> date:
+        return row.snapshot_date or row.holding_date.date()
+
+    def utc_datetime(value: datetime) -> datetime:
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+    def opening_portfolio_value(day: date) -> Decimal:
+        day_start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        total = Decimal("0")
+        for fund_id, fund_holdings in holdings_by_fund.items():
+            same_day = next((row for row in fund_holdings if holding_day(row) == day), None)
+            if same_day is not None:
+                value = Decimal(
+                    same_day.opening_value
+                    if same_day.opening_value is not None
+                    else same_day.account_value
+                )
+                total += max(value, Decimal("0"))
+                continue
+
+            previous = next(
+                (row for row in reversed(fund_holdings) if holding_day(row) < day),
+                None,
+            )
+            fund_entries = entries_by_fund.get(fund_id, []) if fund_id is not None else []
+            if previous is not None:
+                value = Decimal(previous.account_value)
+                previous_time = utc_datetime(previous.holding_date)
+                value += sum(
+                    (
+                        Decimal(entry.amount)
+                        for entry in fund_entries
+                        if previous_time < utc_datetime(entry.created_at) < day_start
+                    ),
+                    Decimal("0"),
+                )
+                total += max(value, Decimal("0"))
+                continue
+
+            future = next((row for row in fund_holdings if holding_day(row) > day), None)
+            if future is not None:
+                value = Decimal(
+                    future.opening_value
+                    if future.opening_value is not None
+                    else future.account_value
+                )
+                future_time = utc_datetime(future.holding_date)
+                value -= sum(
+                    (
+                        Decimal(entry.amount)
+                        for entry in fund_entries
+                        if day_start <= utc_datetime(entry.created_at) < future_time
+                    ),
+                    Decimal("0"),
+                )
+                total += max(value, Decimal("0"))
+        return total
+
     portfolio_growth = Decimal("1")
-    for day_holdings in holdings_by_date.values():
-        opening = sum((Decimal(h.opening_value or 0) for h in day_holdings), Decimal("0"))
+    ordered_days = sorted(holdings_by_date)
+    opening_by_date: dict[date, Decimal] = {}
+    for holding_snapshot_date in ordered_days:
+        day_holdings = holdings_by_date[holding_snapshot_date]
+        opening = opening_portfolio_value(holding_snapshot_date)
+        opening_by_date[holding_snapshot_date] = opening
         pnl = sum((Decimal(h.daily_pnl or 0) for h in day_holdings), Decimal("0"))
         if opening > 0:
             portfolio_growth *= Decimal("1") + pnl / opening
     portfolio_return = (portfolio_growth - Decimal("1")) * Decimal("100")
 
-    ordered_days = sorted(holdings_by_date)
-    start_value = (
-        sum((Decimal(h.opening_value or h.account_value) for h in holdings_by_date[ordered_days[0]]), Decimal("0"))
-        if ordered_days else Decimal("0")
-    )
-    end_value = (
-        sum((Decimal(h.account_value) for h in holdings_by_date[ordered_days[-1]]), Decimal("0"))
-        if ordered_days else Decimal("0")
-    )
+    start_value = opening_by_date[ordered_days[0]] if ordered_days else Decimal("0")
+    if ordered_days:
+        last_day = ordered_days[-1]
+        last_day_start = datetime.combine(last_day, datetime.min.time(), tzinfo=timezone.utc)
+        last_day_end = last_day_start + timedelta(days=1)
+        last_day_pnl = sum(
+            (Decimal(h.daily_pnl or 0) for h in holdings_by_date[last_day]),
+            Decimal("0"),
+        )
+        last_day_flow = sum(
+            (
+                Decimal(entry.amount)
+                for entry in balance_entries
+                if last_day_start <= utc_datetime(entry.created_at) < last_day_end
+                and utc_datetime(entry.created_at) <= end_date
+            ),
+            Decimal("0"),
+        )
+        end_value = opening_by_date[last_day] + last_day_pnl + last_day_flow
+    else:
+        end_value = Decimal("0")
 
     return {
         "total_pnl": float(total_pnl),

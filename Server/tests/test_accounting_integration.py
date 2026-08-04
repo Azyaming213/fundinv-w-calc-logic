@@ -449,6 +449,191 @@ class AccountingIntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(report["total_pnl"], -6.0)
         self.assertEqual([row["net_flow"] for row in report["daily_returns"]], [50.0, -20.0])
 
+    def test_current_day_snapshot_is_included_before_nominal_holding_time(self):
+        suffix = uuid.uuid4().hex[:8]
+        investor = Investor(
+            email=f"date-boundary-{suffix}@example.test",
+            full_name="Date Boundary Investor",
+            is_active=True,
+        )
+        self.db.add(investor)
+        self.db.flush()
+        account = InvestmentAccount(
+            investor_id=investor.id,
+            account_name="Date Boundary",
+            account_number=f"DATE-{suffix}",
+            currency="USD",
+            status="active",
+            total_invested=Decimal("100"),
+            current_value=Decimal("107.50"),
+            manager_fund_balance={},
+            fund_allocations={},
+            investment_strategy="balanced",
+        )
+        self.db.add(account)
+        self.db.flush()
+        fund = self._new_fund("1.00")
+        start = datetime(2097, 5, 1, 0, tzinfo=timezone.utc)
+        query_end = start.replace(hour=12)
+        nominal_holding_time = start.replace(hour=22)
+        self.db.add(PortfolioHolding(
+            investor_id=account.investor_id,
+            fund_id=fund.id,
+            holding_date=nominal_holding_time,
+            snapshot_date=start.date(),
+            account_value=Decimal("107.50"),
+            shareholding_pct=Decimal("100"),
+            daily_pnl=Decimal("7.50"),
+            fund_nav=Decimal("107.50"),
+            units=Decimal("100"),
+            nav_per_unit=Decimal("1.075"),
+            opening_value=Decimal("100"),
+            opening_shareholding_pct=Decimal("100"),
+            closing_value_before_flows=Decimal("107.50"),
+            net_flow=Decimal("0"),
+        ))
+        self.db.flush()
+
+        report = compute_investor_pnl(
+            self.db, account.investor_id, start_date=start, end_date=query_end,
+        )
+
+        self.assertEqual(report["total_pnl"], 7.5)
+        self.assertAlmostEqual(report["portfolio_return_pct"], 7.5)
+
+    def test_portfolio_return_carries_unvalued_funds_in_daily_denominator(self):
+        suffix = uuid.uuid4().hex[:8]
+        investor = Investor(
+            email=f"sparse-valuations-{suffix}@example.test",
+            full_name="Sparse Valuation Investor",
+            is_active=True,
+        )
+        self.db.add(investor)
+        self.db.flush()
+        account = InvestmentAccount(
+            investor_id=investor.id,
+            account_name="Sparse Valuations",
+            account_number=f"SPARSE-{suffix}",
+            currency="USD",
+            status="active",
+            total_invested=Decimal("3500"),
+            current_value=Decimal("3568"),
+            manager_fund_balance={},
+            fund_allocations={},
+            investment_strategy="balanced",
+        )
+        first_fund = self._new_fund("1.021")
+        second_fund = self._new_fund("1.01733334")
+        self.db.add(account)
+        self.db.flush()
+
+        start = datetime(2096, 7, 28, 22, tzinfo=timezone.utc)
+        rows = [
+            # The second fund exists throughout the period, but its first
+            # valuation is two days later.  It must still be carried in the
+            # opening denominator on July 28 and 29.
+            (first_fund, 0, "2000", "0", "2000"),
+            (first_fund, 1, "2000", "10", "2010"),
+            (first_fund, 2, "2010", "15", "2025"),
+            (second_fund, 2, "1500", "0", "1500"),
+            (first_fund, 3, "2025", "5", "2030"),
+            (second_fund, 3, "1500", "15", "1515"),
+            (first_fund, 4, "2030", "12", "2042"),
+            (second_fund, 4, "1515", "5", "1520"),
+            # Only the second fund is valued on the final day; the first fund
+            # carries forward unchanged at 2042.
+            (second_fund, 5, "1520", "6", "1526"),
+        ]
+        for fund, day_offset, opening, pnl, closing in rows:
+            when = start + timedelta(days=day_offset)
+            self.db.add(PortfolioHolding(
+                investor_id=investor.id,
+                fund_id=fund.id,
+                holding_date=when,
+                snapshot_date=when.date(),
+                account_value=Decimal(closing),
+                shareholding_pct=Decimal("30"),
+                daily_pnl=Decimal(pnl),
+                opening_value=Decimal(opening),
+                closing_value_before_flows=Decimal(closing),
+                net_flow=Decimal("0"),
+            ))
+        self.db.flush()
+
+        full_report = compute_investor_pnl(
+            self.db,
+            investor.id,
+            start_date=start.replace(hour=0),
+            end_date=(start + timedelta(days=5)).replace(hour=23),
+        )
+        monthly_report = compute_investor_pnl(
+            self.db,
+            investor.id,
+            start_date=(start + timedelta(days=4)).replace(hour=0),
+            end_date=(start + timedelta(days=5)).replace(hour=23),
+        )
+
+        self.assertEqual(full_report["total_pnl"], 68.0)
+        self.assertAlmostEqual(full_report["portfolio_return_pct"], 68 / 3500 * 100)
+        self.assertEqual(full_report["start_value"], 3500.0)
+        self.assertEqual(full_report["end_value"], 3568.0)
+        self.assertEqual(monthly_report["total_pnl"], 23.0)
+        self.assertAlmostEqual(monthly_report["portfolio_return_pct"], 23 / 3545 * 100)
+
+    def test_existing_fund_requires_today_valuation_before_settlement(self):
+        account = self.db.query(InvestmentAccount).first()
+        manager_user = self.db.query(User).filter_by(email="manager@fundinv.com").one()
+        fund = self._new_fund("1.00")
+        today = datetime.now(timezone.utc).date()
+        self.db.add(FundPosition(
+            investment_account_id=account.id,
+            investor_id=account.investor_id,
+            fund_id=fund.id,
+            units=Decimal("100"),
+            cost_basis=Decimal("100"),
+        ))
+        self.db.add(FundValuation(
+            fund_id=fund.id,
+            valuation_date=today - timedelta(days=1),
+            opening_assets=Decimal("100"),
+            daily_pnl=Decimal("0"),
+            closing_assets_before_flows=Decimal("100"),
+            net_flow=Decimal("0"),
+            closing_assets=Decimal("100"),
+            units_outstanding=Decimal("100"),
+            nav_per_unit=Decimal("1"),
+            status="finalized",
+            source="manager_entry",
+        ))
+        flow = FundFlow(
+            investor_id=account.investor_id,
+            investment_account_id=account.id,
+            fund_id=fund.id,
+            flow_type="deposit",
+            amount=Decimal("11"),
+            status="pending_fund_transfer",
+            request_id=f"VALUATION-GATE-{uuid.uuid4().hex}",
+        )
+        self.db.add(flow)
+        self.db.flush()
+
+        with self.assertRaisesRegex(ValueError, "Manager must finalize"):
+            settle_fund_flow(self.db, flow)
+        self.assertIsNone(
+            self.db.query(FundBalanceEntry).filter_by(fund_flow_id=flow.id).first()
+        )
+
+        valuation, preview = finalize_valuation(
+            self.db, fund, today, Decimal("10"), manager_user.id,
+            "Settlement gate regression test",
+        )
+        settled = settle_fund_flow(self.db, flow)
+
+        self.assertEqual(Decimal(str(preview["allocated_pnl_total"])), Decimal("10.0"))
+        self.assertEqual(Decimal(valuation.nav_per_unit), Decimal("1.10000000"))
+        self.assertEqual(settled.units_delta, Decimal("10.0000000000"))
+        self.assertEqual(flow.status, "completed")
+
     def test_complete_two_investor_shareholding_and_pnl_lifecycle(self):
         suffix = uuid.uuid4().hex[:10]
         investors = [

@@ -36,7 +36,7 @@ export default function ManagerValuationsPage() {
       setFundId((current) => current || String(eligible[0]?.id || ''));
       setHistory(valuationData.valuations);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load valuations');
+      setError((err as { message?: string }).message || 'Unable to load valuations');
     }
   }, []);
 
@@ -53,7 +53,7 @@ export default function ManagerValuationsPage() {
         await load();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Unable to ${mode} valuation`);
+      setError((err as { message?: string }).message || `Unable to ${mode} valuation`);
     } finally { setLoading(false); }
   }
 

@@ -244,7 +244,8 @@ export default function OperationsFundFlowsPage() {
                           {canVerifyPayNow(flow) && (
                             <Button
                               onClick={() => handleAction(flow.id, 'verify-complete')}
-                              disabled={actionLoading === flow.id}
+                              disabled={actionLoading === flow.id || flow.settlement_ready === false}
+                              title={flow.settlement_message || undefined}
                               className="px-2 py-1 text-xs whitespace-nowrap"
                             >
                               {actionLoading === flow.id ? '...' : 'Verify & Complete'}
@@ -263,7 +264,8 @@ export default function OperationsFundFlowsPage() {
                           {canComplete(flow.status) && (
                             <Button
                               onClick={() => handleAction(flow.id, 'complete')}
-                              disabled={actionLoading === flow.id}
+                              disabled={actionLoading === flow.id || flow.settlement_ready === false}
+                              title={flow.settlement_message || undefined}
                               className="px-2 py-1 text-xs"
                             >
                               {actionLoading === flow.id ? '...' : 'Complete'}

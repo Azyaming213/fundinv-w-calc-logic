@@ -51,7 +51,10 @@ SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.SECRET_KEY // ""')
 JWT_ALGORITHM=$(echo "$APP_SECRET" | jq -r '.JWT_ALGORITHM // "HS256"')
 JWT_EXPIRY_MINUTES=$(echo "$APP_SECRET" | jq -r '.JWT_EXPIRY_MINUTES // "60"')
 ENVIRONMENT=production
+COOKIE_SECURE=true
+COOKIE_SAMESITE=lax
 FRONTEND_URL=$(echo "$APP_SECRET" | jq -r '.FRONTEND_URL // ""')
+CORS_ORIGINS=$(echo "$APP_SECRET" | jq -r '.FRONTEND_URL // ""')
 AUTO_MIGRATE=true
 STRIPE_SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.STRIPE_SECRET_KEY // ""')
 STRIPE_WEBHOOK_SECRET=$(echo "$APP_SECRET" | jq -r '.STRIPE_WEBHOOK_SECRET // ""')
@@ -59,8 +62,9 @@ ALPACA_API_KEY=$(echo "$APP_SECRET" | jq -r '.ALPACA_API_KEY // ""')
 ALPACA_SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.ALPACA_SECRET_KEY // ""')
 ALPACA_BASE_URL=$(echo "$APP_SECRET" | jq -r '.ALPACA_BASE_URL // "https://paper-api.alpaca.markets"')
 ALPACA_DATA_URL=$(echo "$APP_SECRET" | jq -r '.ALPACA_DATA_URL // "https://data.alpaca.markets"')
-SMTP_EMAIL=$(echo "$APP_SECRET" | jq -r '.SMTP_EMAIL // ""')
-SMTP_PASSWORD=$(echo "$APP_SECRET" | jq -r '.SMTP_PASSWORD // ""')
+SMTP_EMAIL=$(aws ssm get-parameter --region ${aws_region} --name /fundinv/${environment}/smtp/email --with-decryption --query Parameter.Value --output text)
+SMTP_PASSWORD=$(aws ssm get-parameter --region ${aws_region} --name /fundinv/${environment}/smtp/password --with-decryption --query Parameter.Value --output text)
+S3_ASSETS_BUCKET=${assets_bucket}
 ENVEOF
 
 chmod 600 .env
@@ -75,23 +79,28 @@ http {
   include       /etc/nginx/mime.types;
   default_type  application/octet-stream;
 
+  map $http_x_fundinv_forwarded_proto $fundinv_forwarded_proto {
+    default $http_x_fundinv_forwarded_proto;
+    ""      $scheme;
+  }
+
   server {
     listen 80;
 
     location /api/ {
-      proxy_pass http://127.0.0.1:8000;
+      proxy_pass http://fundinv-backend:8000;
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $fundinv_forwarded_proto;
     }
 
     location / {
-      proxy_pass http://127.0.0.1:3000;
+      proxy_pass http://fundinv-frontend:3000;
       proxy_set_header Host $host;
       proxy_set_header X-Real-IP $remote_addr;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $fundinv_forwarded_proto;
     }
   }
 }
@@ -100,19 +109,20 @@ NGINXEOF
 # ──────────────────────────────────────────────────────────
 # 6. ECR login + pull images
 # ──────────────────────────────────────────────────────────
-ECR_REGISTRY="${data.aws_caller_identity.current.account_id}.dkr.ecr.${aws_region}.amazonaws.com"
+ECR_REGISTRY="${account_id}.dkr.ecr.${aws_region}.amazonaws.com"
 
 aws ecr get-login-password --region ${aws_region} | \
   docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-docker pull "$ECR_REGISTRY/${project_name}-backend-${environment}:latest" &
-docker pull "$ECR_REGISTRY/${project_name}-frontend-${environment}:latest" &
+docker pull "$ECR_REGISTRY/${project_name}-backend-${environment}:pnl-denominator-v3" &
+docker pull "$ECR_REGISTRY/${project_name}-frontend-${environment}:pnl-sequencing-v2" &
 docker pull nginx:alpine &
 wait
 
 # ──────────────────────────────────────────────────────────
 # 7. Stop old containers if they exist
 # ──────────────────────────────────────────────────────────
+docker network inspect fundinv-network >/dev/null 2>&1 || docker network create fundinv-network >/dev/null
 docker stop fundinv-backend fundinv-frontend fundinv-nginx 2>/dev/null || true
 docker rm fundinv-backend fundinv-frontend fundinv-nginx 2>/dev/null || true
 
@@ -121,18 +131,21 @@ docker rm fundinv-backend fundinv-frontend fundinv-nginx 2>/dev/null || true
 # ──────────────────────────────────────────────────────────
 docker run -d --name fundinv-backend \
   --restart unless-stopped \
+  --network fundinv-network \
   --env-file /opt/fundinv/.env \
   -p 127.0.0.1:8000:8000 \
-  "$ECR_REGISTRY/${project_name}-backend-${environment}:latest"
+  "$ECR_REGISTRY/${project_name}-backend-${environment}:pnl-denominator-v3"
 
 docker run -d --name fundinv-frontend \
   --restart unless-stopped \
+  --network fundinv-network \
   -e NEXT_PUBLIC_API_URL= \
   -p 127.0.0.1:3000:3000 \
-  "$ECR_REGISTRY/${project_name}-frontend-${environment}:latest"
+  "$ECR_REGISTRY/${project_name}-frontend-${environment}:pnl-sequencing-v2"
 
 docker run -d --name fundinv-nginx \
   --restart unless-stopped \
+  --network fundinv-network \
   -p 80:80 \
   -v /opt/fundinv/nginx.conf:/etc/nginx/nginx.conf:ro \
   nginx:alpine

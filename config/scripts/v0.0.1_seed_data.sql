@@ -643,4 +643,4 @@ ON CONFLICT (investment_account_id, fund_id) DO NOTHING;
 -- 19. Track schema version
 -- ============================================================
 DELETE FROM fundinv.alembic_version;
-INSERT INTO fundinv.alembic_version (version_num) VALUES ('v0.4.4_security_reporting');
+INSERT INTO fundinv.alembic_version (version_num) VALUES ('v0.5.2_paynow_demo');

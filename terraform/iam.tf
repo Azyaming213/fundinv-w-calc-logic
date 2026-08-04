@@ -111,22 +111,34 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_logs" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
 }
 
+# ── S3 app assets access ─────────────────────────────────────
+data "aws_iam_policy_document" "s3_assets" {
+  statement {
+    actions = [
+      "s3:PutObject",
+      "s3:GetObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      aws_s3_bucket.app_assets.arn,
+      "${aws_s3_bucket.app_assets.arn}/*",
+    ]
+  }
+}
+
+resource "aws_iam_policy" "s3_assets" {
+  name   = "${var.project_name}-s3-assets-${var.environment}"
+  policy = data.aws_iam_policy_document.s3_assets.json
+}
+
+resource "aws_iam_role_policy_attachment" "s3_assets" {
+  role       = aws_iam_role.ec2.name
+  policy_arn = aws_iam_policy.s3_assets.arn
+}
+
 # ── Instance Profile ────────────────────────────────────────
 resource "aws_iam_instance_profile" "ec2" {
   name = "${var.project_name}-ec2-profile-${var.environment}"
   role = aws_iam_role.ec2.name
-}
-
-# ── DynamoDB — Terraform state lock ─────────────────────────
-resource "aws_dynamodb_table" "terraform_lock" {
-  name         = "fundinv-terraform-lock"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "LockID"
-
-  attribute {
-    name = "LockID"
-    type = "S"
-  }
-
-  tags = var.tags
 }

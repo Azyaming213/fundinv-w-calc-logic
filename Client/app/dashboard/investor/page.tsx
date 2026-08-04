@@ -363,6 +363,12 @@ export default function InvestorDashboard() {
         setAccountSuccess(null);
     };
 
+    const topUpAmountNumber = Number(topUpAmount);
+    const topUpAmountValid = topUpAmount !== ''
+        && Number.isFinite(topUpAmountNumber)
+        && topUpAmountNumber > 0
+        && topUpAmountNumber <= 1_000_000;
+
     return (
         <div className="max-w-6xl mx-auto px-8 py-8">
             <div className="flex items-center justify-between mb-8">
@@ -1043,6 +1049,10 @@ export default function InvestorDashboard() {
                                         A fixed-amount dummy PayNow QR appears next. Operations issues units only after the matching demo receipt is verified.
                                     </p>
 
+                                    {topUpAmount !== '' && !topUpAmountValid && !topUpError && (
+                                        <p className="text-sm text-red-700">Enter an amount greater than $0.00 and no more than $1,000,000.00.</p>
+                                    )}
+
                                     {topUpError && (
                                         <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-md">
                                             <p className="text-sm text-red-700">{topUpError}</p>
@@ -1053,7 +1063,7 @@ export default function InvestorDashboard() {
                                         <Button type="button" variant="secondary" onClick={() => setShowTopUpModal(false)} disabled={topUpLoading} className="flex-1">
                                             Cancel
                                         </Button>
-                                        <Button type="submit" disabled={topUpLoading || !topUpAccountId || !topUpFundId || !topUpAmount} className="flex-1">
+                                        <Button type="submit" disabled={topUpLoading || !topUpAccountId || !topUpFundId || !topUpAmountValid} className="flex-1">
                                             {topUpLoading ? 'Generating...' : 'Generate Demo PayNow QR'}
                                         </Button>
                                     </div>
@@ -1066,6 +1076,19 @@ export default function InvestorDashboard() {
 
             {showWithdrawModal && (() => {
                 const wdAccount = accounts.find(a => a.id === withdrawAccountId);
+                const wdAvailable = withdrawFundId && wdAccount
+                    ? Number(wdAccount.manager_fund_balance[String(withdrawFundId)] || 0)
+                    : 0;
+                const wdAmountNumber = Number(withdrawAmount);
+                const wdAmountValid = withdrawAmount !== ''
+                    && Number.isFinite(wdAmountNumber)
+                    && wdAmountNumber > 0
+                    && wdAmountNumber <= wdAvailable;
+                const wdAmountMessage = withdrawAmount !== '' && !wdAmountValid
+                    ? wdAmountNumber <= 0 || !Number.isFinite(wdAmountNumber)
+                        ? 'Enter an amount greater than $0.00.'
+                        : `Amount cannot exceed the selected fund balance of ${wdAvailable.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}.`
+                    : null;
                 return (
                     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
                         <div className="fixed inset-0 bg-black/40" onClick={() => setShowWithdrawModal(false)} />
@@ -1127,7 +1150,7 @@ export default function InvestorDashboard() {
 
                                         <div className="bg-fundinv-surface rounded-md p-3 flex items-center justify-between">
                                             <div>
-                                                <p className="text-xs text-fundinv-muted">Available (Unallocated)</p>
+                                                <p className="text-xs text-fundinv-muted">Available in selected fund</p>
                                         <p className="text-sm font-semibold text-fundinv-primary">
                                                     {(withdrawFundId && wdAccount ? Number(wdAccount.manager_fund_balance[String(withdrawFundId)] || 0) : 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
                                                 </p>
@@ -1176,6 +1199,10 @@ export default function InvestorDashboard() {
                                             Your withdrawal request will be reviewed by the operations team.
                                         </p>
 
+                                        {wdAmountMessage && !withdrawError && (
+                                            <p className="text-sm text-red-700">{wdAmountMessage}</p>
+                                        )}
+
                                         {withdrawError && (
                                             <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-md">
                                                 <p className="text-sm text-red-700">{withdrawError}</p>
@@ -1186,7 +1213,7 @@ export default function InvestorDashboard() {
                                             <Button type="button" variant="secondary" onClick={() => setShowWithdrawModal(false)} disabled={withdrawLoading} className="flex-1">
                                                 Cancel
                                             </Button>
-                                            <Button type="submit" disabled={withdrawLoading || !withdrawAccountId || !withdrawFundId || !withdrawAmount || !(withdrawFundId && wdAccount && Number(wdAccount.manager_fund_balance[String(withdrawFundId)] || 0) > 0)} className="flex-1">
+                                            <Button type="submit" disabled={withdrawLoading || !withdrawAccountId || !withdrawFundId || !wdAmountValid} className="flex-1">
                                                 {withdrawLoading ? 'Submitting...' : 'Submit Withdrawal Request'}
                                             </Button>
                                         </div>

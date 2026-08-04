@@ -1,7 +1,9 @@
 import { clearAuth } from './auth';
 import type { ApiError } from './types';
 
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Production serves the API through the same origin (for example CloudFront ->
+// ALB -> Nginx). Local development can still override this in Client/.env.local.
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 async function request<T>(
   method: string,

@@ -69,3 +69,17 @@ Client/.yarn/versions
 /Client/*.tsbuildinfo
 
 .aider*
+
+# Terraform local state and machine-specific configuration
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/backend.conf
+terraform/terraform.tfvars
+terraform/*.tfplan
+
+# Local build and handoff artifacts
+tmp/
+*.inspect.ndjson
+~$*.pptx
+*.tar.xz

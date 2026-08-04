@@ -42,6 +42,9 @@ test('demo PayNow locks the amount and Operations completes it in one action', a
   await expect(amountInput).toHaveAttribute('min', '1');
   await expect(amountInput).toHaveAttribute('max', '1000000');
   await expect(amountInput).toHaveAttribute('step', '0.01');
+  await amountInput.fill('0');
+  await expect(dialog.getByText('Enter an amount greater than $0.00 and no more than $1,000,000.00.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Generate Demo PayNow QR' })).toBeDisabled();
   await amountInput.fill(amount.toFixed(2));
 
   const depositResponsePromise = page.waitForResponse((response) =>

@@ -7,16 +7,6 @@ resource "aws_db_parameter_group" "main" {
   name   = "${var.project_name}-pg16-${var.environment}"
   family = "postgres16"
 
-  parameter {
-    name  = "max_connections"
-    value = "100"
-  }
-
-  parameter {
-    name  = "shared_preload_libraries"
-    value = "pg_stat_statements"
-  }
-
   tags = var.tags
 }
 
@@ -53,8 +43,8 @@ resource "aws_db_instance" "main" {
 
   auto_minor_version_upgrade = true
   deletion_protection        = var.db_deletion_protection
-  skip_final_snapshot        = false
-  final_snapshot_identifier  = "${var.project_name}-db-final-${var.environment}"
+  skip_final_snapshot        = var.db_deletion_protection ? false : true
+  final_snapshot_identifier  = var.db_deletion_protection ? "${var.project_name}-db-final-${var.environment}" : null
 
   publicly_accessible = false
 

@@ -337,6 +337,8 @@ export interface FundFlowEntry {
   notes: string | null;
   status_message?: string;
   next_action?: string;
+  settlement_ready?: boolean;
+  settlement_message?: string | null;
   payment_url?: string | null;
   provider?: string | null;
   provider_reference?: string | null;

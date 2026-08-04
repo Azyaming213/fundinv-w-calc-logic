@@ -10,15 +10,22 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 
-  # Backend configured at init time:
-  #   terraform init -backend-config=backend.conf
-  # See backend.conf.example for the required values.
+  backend "s3" {}
 }
 
 provider "aws" {
   region = var.aws_region
+}
+
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
 }
 
 data "aws_availability_zones" "available" {
@@ -35,5 +42,3 @@ data "aws_ami" "amazon_linux_2023" {
 }
 
 data "aws_caller_identity" "current" {}
-
-data "aws_ecr_authorization_token" "current" {}

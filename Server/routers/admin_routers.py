@@ -19,6 +19,7 @@ from services.auth_service import hash_password
 from services.audit_service import log_event, AUDIT_ACTIONS, get_system_user
 from services.email_service import send_fund_flow_approved_email, send_fund_flow_completed_email, send_fund_flow_rejected_email, send_invite_email
 from services.fund_accounting_service import settle_fund_flow
+from services.valuation_service import settlement_valuation_status
 from services.fund_targeting_service import expose_fund_to_active_investors
 from services.paynow_demo_service import paynow_qr_data_url
 from config import settings
@@ -341,6 +342,20 @@ def list_fund_flows(
         status_message, next_action = status_guidance.get(
             f.status, (f.status.replace("_", " ").title(), "none")
         )
+        settlement_ready = True
+        settlement_message = None
+        if f.fund_id and f.status in {
+            "pending_ops_team",
+            "approved_pending_payment",
+            "awaiting_payout_setup",
+            "pending_fund_transfer",
+        }:
+            settlement_ready, settlement_message = settlement_valuation_status(
+                db, f.fund_id, datetime.now(timezone.utc).date()
+            )
+            if not settlement_ready:
+                status_message = settlement_message
+                next_action = "manager_valuation"
         flow_list.append({
             "id": f.id,
             "investor_email": f.investor.email if f.investor else None,
@@ -361,6 +376,8 @@ def list_fund_flows(
             "notes": f.notes,
             "status_message": status_message,
             "next_action": next_action,
+            "settlement_ready": settlement_ready,
+            "settlement_message": settlement_message,
             "provider": f.provider,
             "provider_reference": f.provider_reference,
             # Provider URLs contain flow-specific identifiers. Only the owner

@@ -2,7 +2,7 @@
 variable "aws_region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"
+  default     = "ap-southeast-1"
 }
 
 variable "environment" {
@@ -39,7 +39,7 @@ variable "db_name" {
 variable "db_username" {
   description = "Database master username"
   type        = string
-  default     = "fundinv_admin"
+  default     = "yeaw_min"
 }
 
 variable "db_instance_class" {
@@ -51,7 +51,7 @@ variable "db_instance_class" {
 variable "db_allocated_storage" {
   description = "RDS allocated storage in GB"
   type        = number
-  default     = 20
+  default     = 5
 }
 
 variable "db_deletion_protection" {
@@ -137,6 +137,53 @@ variable "frontend_url" {
   description = "Frontend URL for CORS origins and email links"
   type        = string
   default     = ""
+}
+
+# ── Domain ──
+variable "domain_name" {
+  description = "Root domain name for the application (e.g. fundinv.com). Leave empty to skip CloudFront/ACM/Route53."
+  type        = string
+  default     = ""
+}
+
+variable "enable_default_cloudfront" {
+  description = "Create an HTTPS CloudFront endpoint using the AWS-provided cloudfront.net certificate when no custom domain is configured."
+  type        = bool
+  default     = false
+}
+
+# ── Monitoring ──
+variable "alarm_email" {
+  description = "Email address for CloudWatch alarm notifications"
+  type        = string
+  default     = ""
+}
+
+variable "cloudfront_price_class" {
+  description = "CloudFront distribution price class"
+  type        = string
+  default     = "PriceClass_100"
+}
+
+# ── WAF ──
+variable "enable_waf" {
+  description = "Enable WAF Web ACL attached to CloudFront"
+  type        = bool
+  default     = true
+}
+
+# ── RDS Proxy ──
+variable "enable_rds_proxy" {
+  description = "Enable RDS Proxy for connection pooling (recommended for production)"
+  type        = bool
+  default     = false
+}
+
+# ── CloudWatch ──
+variable "cloudwatch_log_retention_days" {
+  description = "CloudWatch log group retention in days"
+  type        = number
+  default     = 30
 }
 
 # ── Tags ──

@@ -8,9 +8,16 @@ environment  = "dev"
 project_name = "fundinv"
 key_name     = "fundinv-key" # SSH key pair name in AWS
 
+# ── Domain ──
+domain_name  = "fundinv.com"  # Your domain name for Route53 + CloudFront
+enable_default_cloudfront = false # Set true only when domain_name is empty
+
+# ── Monitoring ──
+alarm_email  = "admin@example.com"  # Email for CloudWatch alarm notifications
+
 # ── RDS ──
 db_name                = "fundinv"
-db_username            = "fundinv_admin"
+db_username            = "yeaw_min"
 db_instance_class      = "db.t3.small"
 db_allocated_storage   = 20
 db_deletion_protection = false
@@ -20,6 +27,9 @@ ec2_instance_type = "t3.medium"
 ec2_min_size      = 1
 ec2_max_size      = 2
 ec2_desired_size  = 1
+
+# ── RDS Proxy (optional, recommended for production) ──
+enable_rds_proxy = false
 
 # ── Application Secrets ──
 # Generate a strong random key: openssl rand -base64 64
@@ -37,5 +47,5 @@ alpaca_secret_key = "..."
 smtp_email    = "noreply@example.com"
 smtp_password = "..."
 
-# Set to the ALB DNS name after first apply: http://<alb-dns>
+# Set to the CloudFront domain after first apply
 frontend_url = ""

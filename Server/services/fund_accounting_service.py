@@ -15,7 +15,10 @@ from models import (
     FundValuation,
     InvestmentAccount,
 )
-from services.valuation_service import append_settled_flow_to_finalized_valuation
+from services.valuation_service import (
+    append_settled_flow_to_finalized_valuation,
+    settlement_valuation_status,
+)
 
 
 MONEY = Decimal("0.0001")
@@ -114,6 +117,12 @@ def settle_fund_flow(
         raise ValueError(f"Unsupported fund flow type: {flow.flow_type}")
     if not flow.investment_account_id or not flow.fund_id:
         raise ValueError("Fund flow is missing its account or fund")
+
+    settlement_ready, settlement_message = settlement_valuation_status(
+        db, flow.fund_id, datetime.now(timezone.utc).date()
+    )
+    if not settlement_ready:
+        raise ValueError(settlement_message or "Today's fund valuation is not finalized")
 
     account = (
         db.query(InvestmentAccount)
