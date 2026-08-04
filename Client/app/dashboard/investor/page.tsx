@@ -9,10 +9,9 @@ import Input from '../../components/Input';
 import { api, API_BASE } from '../../lib/api';
 import { getUser } from '../../lib/auth';
 import type {
-  Transaction,
   PortfolioSummary,
-  FundInvestmentItem,
   Fund,
+  FundFlowEntry,
   PnlReport,
 } from '../../lib/types';
 
@@ -45,7 +44,7 @@ interface PayNowDepositResult {
 
 export default function InvestorDashboard() {
     const [summary, setSummary] = useState<PortfolioSummary | null>(null);
-    const [transactions, setTransactions] = useState<Transaction[]>([]);
+    const [recentFundFlows, setRecentFundFlows] = useState<FundFlowEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [emailSending, setEmailSending] = useState(false);
@@ -64,8 +63,6 @@ export default function InvestorDashboard() {
         daily_pnl: number;
         net_flow: number;
     }>>([]);
-
-    const [fundInvestments, setFundInvestments] = useState<FundInvestmentItem[]>([]);
 
     const [showAccountModal, setShowAccountModal] = useState(false);
     const [accountName, setAccountName] = useState('');
@@ -107,14 +104,14 @@ export default function InvestorDashboard() {
         try {
             const monthStart = new Date();
             monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
-            const [summaryRes, txnRes, monthlyRes, trendRes] = await Promise.all([
+            const [summaryRes, flowRes, monthlyRes, trendRes] = await Promise.all([
                 api.get<PortfolioSummary>('/api/portfolio/summary'),
-                api.get<{ transactions: Transaction[] }>('/api/portfolio/recent-transactions'),
+                api.get<{ flows: FundFlowEntry[] }>('/api/admin/fund-flows?page=1&page_size=5'),
                 api.get<{ pnl: PnlReport }>(`/api/portfolio/pnl?start_date=${encodeURIComponent(monthStart.toISOString())}&end_date=${encodeURIComponent(new Date().toISOString())}`),
                 api.get<Array<{ holding_date: string; account_value: number; daily_pnl: number; net_flow: number }>>('/api/portfolio/chart-data'),
             ]);
             setSummary(summaryRes);
-            setTransactions(txnRes.transactions || []);
+            setRecentFundFlows(flowRes.flows || []);
             setMonthlyPnl(monthlyRes.pnl);
             setPerformanceTrend(trendRes || []);
             const fundsRes = await api.get<{ funds: Fund[] }>('/api/funds');
@@ -142,20 +139,8 @@ export default function InvestorDashboard() {
         } finally { setPeriodLoading(false); }
     };
 
-    const fetchFundInvestments = async () => {
-        try {
-            const data = await api.get<{ fund_investments: FundInvestmentItem[] }>('/api/funds/positions');
-            setFundInvestments(data.fund_investments || []);
-        } catch {
-            // This history is supplementary to the accounting summary, so a
-            // temporary failure must not prevent the dashboard from loading.
-            setFundInvestments([]);
-        }
-    };
-
     useEffect(() => {
         fetchData();
-        fetchFundInvestments();
     }, []);
 
     const fmt = (n: number) =>
@@ -623,37 +608,39 @@ export default function InvestorDashboard() {
                             )}
                         </Card>
 
-                        <Card title="Recent Transactions">
-                            {transactions.length === 0 ? (
+                        <Card title="Recent Fund Activity">
+                            {recentFundFlows.length === 0 ? (
                                 <div className="h-64 flex items-center justify-center text-sm text-fundinv-muted">
-                                    No transactions yet
+                                    No fund activity yet
                                 </div>
                             ) : (
                                 <div className="overflow-x-auto -mx-6 max-h-80 overflow-y-auto">
                                     <table className="w-full text-sm">
                                         <thead className="sticky top-0 bg-white">
                                             <tr className="border-b border-fundinv-border">
-                                                <th className="text-left py-2 px-6 font-medium text-fundinv-muted">Symbol</th>
-                                                <th className="text-left py-2 px-2 font-medium text-fundinv-muted">Type</th>
-                                                <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Qty</th>
-                                                <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Price</th>
-                                                <th className="text-right py-2 px-6 font-medium text-fundinv-muted">P&L</th>
+                                                <th className="text-left py-2 px-6 font-medium text-fundinv-muted">Fund</th>
+                                                <th className="text-left py-2 px-2 font-medium text-fundinv-muted">Activity</th>
+                                                <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Amount</th>
+                                                <th className="text-left py-2 px-2 font-medium text-fundinv-muted">Status</th>
+                                                <th className="text-left py-2 px-6 font-medium text-fundinv-muted">Requested</th>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {transactions.map((t) => (
-                                                <tr key={t.id} className="border-b border-fundinv-border last:border-0">
-                                                    <td className="py-2.5 px-6 font-medium text-fundinv-primary">{t.symbol}</td>
+                                            {recentFundFlows.map((flow) => (
+                                                <tr key={flow.id} className="border-b border-fundinv-border last:border-0">
+                                                    <td className="py-2.5 px-6 font-medium text-fundinv-primary">{flow.fund_name || 'Legacy / unallocated'}</td>
                                                     <td className="py-2.5 px-2">
-                                                        <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded uppercase ${t.trade_type === 'buy' ? 'text-fundinv-success bg-emerald-50' : 'text-fundinv-danger bg-red-50'
+                                                        <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded uppercase ${flow.flow_type === 'deposit' ? 'text-fundinv-success bg-emerald-50' : 'text-amber-700 bg-amber-50'
                                                             }`}>
-                                                            {t.trade_type}
+                                                            {flow.flow_type === 'deposit' ? 'Subscription' : 'Redemption'}
                                                         </span>
                                                     </td>
-                                                    <td className="py-2.5 px-2 text-right font-mono text-fundinv-muted">{t.volume}</td>
-                                                    <td className="py-2.5 px-2 text-right font-mono text-fundinv-muted">${t.price.toFixed(2)}</td>
-                                                    <td className={`py-2.5 px-6 text-right font-mono font-medium ${pnlColor(t.net_pnl)}`}>
-                                                        {fmt(t.net_pnl)}
+                                                    <td className="py-2.5 px-2 text-right font-mono text-fundinv-primary">{fmt(flow.amount)}</td>
+                                                    <td className="py-2.5 px-2 text-xs text-fundinv-muted capitalize">
+                                                        {flow.status.replace(/_/g, ' ')}
+                                                    </td>
+                                                    <td className="py-2.5 px-6 text-xs text-fundinv-muted whitespace-nowrap">
+                                                        {flow.requested_at ? new Date(flow.requested_at).toLocaleDateString() : '—'}
                                                     </td>
                                                 </tr>
                                             ))}
@@ -664,7 +651,7 @@ export default function InvestorDashboard() {
                         </Card>
                     </div>
 
-                    {fundInvestments.length > 0 && (
+                    {(summary?.fund_positions?.length ?? 0) > 0 && (
                         <Card title="Fund Investments">
                             <div className="overflow-x-auto -mx-6">
                                 <table className="w-full text-sm">
@@ -672,35 +659,32 @@ export default function InvestorDashboard() {
                                         <tr className="border-b border-fundinv-border">
                                             <th className="text-left py-2 px-6 font-medium text-fundinv-muted">Fund</th>
                                             <th className="text-left py-2 px-2 font-medium text-fundinv-muted">Type</th>
-                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Amount</th>
-                                            <th className="text-left py-2 px-2 font-medium text-fundinv-muted">Status</th>
-                                            <th className="text-left py-2 px-6 font-medium text-fundinv-muted">Invested</th>
+                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Units</th>
+                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">NAV</th>
+                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Cost basis</th>
+                                            <th className="text-right py-2 px-6 font-medium text-fundinv-muted">Current value</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {fundInvestments.map((fi) => (
-                                            <tr key={fi.id} className="border-b border-fundinv-border last:border-0 hover:bg-fundinv-surface/50">
-                                                <td className="py-2.5 px-6 font-medium text-fundinv-primary">{fi.fund_name}</td>
-                                                <td className="py-2.5 px-2">
-                                                    <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-fundinv-surface capitalize">
-                                                        {fi.fund_type}
-                                                    </span>
-                                                </td>
-                                                <td className="py-2.5 px-2 text-right font-mono text-fundinv-primary">{fmt(fi.amount)}</td>
-                                                <td className="py-2.5 px-2">
-                                                    <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded capitalize ${
-                                                        fi.status === 'completed' || fi.status === 'allocated' ? 'text-fundinv-success bg-emerald-50' :
-                                                        fi.status === 'pending' ? 'text-amber-600 bg-amber-50' :
-                                                        'text-fundinv-muted bg-fundinv-surface'
-                                                    }`}>
-                                                        {fi.status}
-                                                    </span>
-                                                </td>
-                                                <td className="py-2.5 px-6 text-xs text-fundinv-muted">
-                                                    {fi.invested_at ? new Date(fi.invested_at).toLocaleDateString() : '—'}
-                                                </td>
-                                            </tr>
-                                        ))}
+                                        {summary?.fund_positions.map((position) => {
+                                            const fundType = funds.find((fund) => fund.id === position.fund_id)?.fund_type || 'fund';
+                                            return (
+                                                <tr key={`${position.investment_account_id}-${position.fund_id}`} className="border-b border-fundinv-border last:border-0 hover:bg-fundinv-surface/50">
+                                                    <td className="py-2.5 px-6 font-medium text-fundinv-primary">{position.fund}</td>
+                                                    <td className="py-2.5 px-2">
+                                                        <span className="px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-fundinv-surface capitalize">
+                                                            {fundType}
+                                                        </span>
+                                                    </td>
+                                                    <td className="py-2.5 px-2 text-right font-mono text-fundinv-primary">{position.units.toFixed(4)}</td>
+                                                    <td className="py-2.5 px-2 text-right font-mono text-fundinv-primary">{fmt(position.nav_per_unit)}</td>
+                                                    <td className="py-2.5 px-2 text-right font-mono text-fundinv-muted">
+                                                        {fmt(position.cost_basis)}
+                                                    </td>
+                                                    <td className="py-2.5 px-6 text-right font-mono font-medium text-fundinv-primary">{fmt(position.market_value)}</td>
+                                                </tr>
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>
