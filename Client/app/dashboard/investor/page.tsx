@@ -1054,7 +1054,11 @@ export default function InvestorDashboard() {
                                         <label className="text-sm font-medium text-fundinv-primary">Account</label>
                                             <select
                                                 value={withdrawAccountId ?? ''}
-                                                onChange={(e) => setWithdrawAccountId(Number(e.target.value))}
+                                                onChange={(e) => {
+                                                    setWithdrawAccountId(Number(e.target.value));
+                                                    setWithdrawFundId(null);
+                                                    setWithdrawAmount('');
+                                                }}
                                                 disabled={withdrawLoading}
                                                 className="px-3 py-2 text-sm border border-fundinv-border rounded-md text-fundinv-primary bg-white focus:outline-none focus:ring-2 focus:ring-fundinv-accent"
                                             >
@@ -1063,11 +1067,14 @@ export default function InvestorDashboard() {
                                                 ) : (
                                                     accounts.map((a) => (
                                                         <option key={a.id} value={a.id}>
-                                                            {a.account_name} — ${a.unallocated_balance.toFixed(2)} available
+                                                            {a.account_name}
                                                         </option>
                                                     ))
                                                 )}
                                         </select>
+                                        <p className="text-xs text-fundinv-muted">
+                                            Redemptions use your settled value in a fund, not an account cash wallet.
+                                        </p>
                                     </div>
 
                                     <div className="flex flex-col gap-1.5">
@@ -1078,8 +1085,10 @@ export default function InvestorDashboard() {
                                             disabled={withdrawLoading}
                                             className="px-3 py-2 text-sm border border-fundinv-border rounded-md text-fundinv-primary bg-white focus:outline-none focus:ring-2 focus:ring-fundinv-accent"
                                         >
-                                            <option value="">Select an approved fund</option>
-                                            {funds.map((fund) => <option key={fund.id} value={fund.id}>{fund.name}</option>)}
+                                            <option value="">Select a settled fund position</option>
+                                            {funds
+                                                .filter((fund) => Number(wdAccount?.manager_fund_balance[String(fund.id)] || 0) > 0)
+                                                .map((fund) => <option key={fund.id} value={fund.id}>{fund.name}</option>)}
                                         </select>
                                     </div>
 
