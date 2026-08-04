@@ -19,6 +19,23 @@ test('investor uses an HTTP-only session and sees reporting/security', async ({ 
   await expect(page.getByText('Loading portfolio...')).not.toBeVisible({ timeout: 20_000 });
   await expect(page.getByText('Monthly Return')).toBeVisible();
   await expect(page.getByText('Performance period')).toBeVisible();
+  const summaryResponse = await page.request.get('/api/portfolio/summary');
+  expect(summaryResponse.status()).toBe(200);
+  const summary = (await summaryResponse.json()).data as {
+    fund_positions: Array<{ fund_id: number; units: number; market_value: number }>;
+    fund_breakdown: Array<{ fund_id: number; units: number; amount: number }>;
+  };
+  expect(summary.fund_positions.length).toBeGreaterThan(2);
+  expect(summary.fund_positions.every((position) => position.units > 0 && position.market_value > 0)).toBe(true);
+  const investmentCard = page.getByRole('heading', { name: 'Fund Investments' }).locator('xpath=../..');
+  await expect(investmentCard.locator('tbody tr')).toHaveCount(summary.fund_positions.length);
+  expect(summary.fund_breakdown.length).toBe(new Set(summary.fund_positions.map((position) => position.fund_id)).size);
+
+  const recentFlowsResponse = await page.request.get('/api/admin/fund-flows?page=1&page_size=5');
+  expect(recentFlowsResponse.status()).toBe(200);
+  const recentFlows = (await recentFlowsResponse.json()).data.flows as Array<{ id: number }>;
+  const activityCard = page.getByRole('heading', { name: 'Recent Fund Activity' }).locator('xpath=../..');
+  await expect(activityCard.locator('tbody tr')).toHaveCount(recentFlows.length);
   expect(await page.evaluate(() => localStorage.getItem('fundinv_token'))).toBeNull();
   const session = (await context.cookies()).find((cookie) => cookie.name === 'fundinv_session');
   expect(session?.httpOnly).toBe(true);
@@ -98,6 +115,12 @@ test('manager can open attribution and what-if analysis', async ({ page }) => {
   await page.goto('/dashboard/manager/valuations');
   await expect(page.getByRole('heading', { name: 'Daily Fund Valuation' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preview calculation' })).toBeVisible();
+  const fundSelect = page.locator('select').first();
+  await expect(fundSelect.locator('option')).toHaveCount(14);
+  await fundSelect.selectOption({ label: 'Vanguard S&P 500 ETF' });
+  await page.getByLabel('Valuation date').fill('2026-08-03');
+  await expect(page.getByLabel('Daily fund P&L (USD)')).toHaveValue('74.37', { timeout: 20_000 });
+  await expect(page.getByText('$74.37 from a +1.4568% fund return.')).toBeVisible();
   const historyResponse = await page.request.get('/api/manager/valuations');
   expect(historyResponse.status()).toBe(200);
 

@@ -269,7 +269,7 @@ def build() -> None:
     add_callout(
         doc,
         "Core workflow: demonstration-ready",
-        "Admin access, Investor fund browsing, demo PayNow subscription, Operations settlement, Manager manual valuation with preview, Investor P&L allocation, redemption, holdings, analytics, audit records, and AWS-hosted access were exercised successfully.",
+        "Admin access, Investor fund browsing, demo PayNow subscription, Operations settlement, Alpaca-assisted Manager valuation with preview, Investor P&L allocation, redemption, holdings, analytics, audit records, and AWS-hosted access were exercised successfully.",
         fill=PALE_GREEN,
         accent=GREEN,
     )
@@ -277,13 +277,14 @@ def build() -> None:
         doc,
         ["Area", "Result", "Evidence"],
         [
-            ("Backend test suite", "PASS", "34/34 unit and integration tests"),
+            ("Backend test suite", "PASS", "36/36 unit and integration tests"),
             ("Frontend production build", "PASS", "36 routes compiled and prerendered"),
+            ("Four-role browser audit", "PASS", "10/10 deployed route, access, and cross-role checks"),
             ("Live subscription", "PASS", "$12.34 matched, settled once"),
             ("Live redemption", "PASS", "$7.89 approved, transferred, completed"),
             ("P&L allocation", "PASS", "$10 fund P&L allocated $4.00 to a 40% holder"),
             ("Investor dashboard consistency", "PASS", "Value changed by net cash flow of +$4.45"),
-            ("Automatic market suggestion", "BLOCKED", "AWS runtime receives Alpaca 401 Unauthorized"),
+            ("Automatic market suggestion", "PASS", "AWS Alpaca account/data calls return 200; VOO prefill verified"),
             ("CI/CD credentials", "ATTENTION", "GitHub deployment jobs fail at AWS credential setup; manual rollout used"),
         ],
         widths=[1.55, 0.8, 4.3],
@@ -291,7 +292,7 @@ def build() -> None:
     add_callout(
         doc,
         "Do not claim zero defects",
-        "The controlled manual valuation path works, but automatic Alpaca-derived P&L is not currently available in AWS. Present it as an external-credential limitation, not as a working feature.",
+        "The demonstrated workflows and controls have passed the current test suite, but no finite test proves zero defects or enterprise readiness. Present the system as a tested capstone deployment with documented operational limits.",
         fill=PALE_AMBER,
         accent=AMBER,
     )
@@ -357,15 +358,15 @@ def build() -> None:
     add_callout(
         doc,
         "Current production condition",
-        "The deployed backend is sending an authenticated Alpaca request with the IEX feed, but Alpaca responds 401 Unauthorized. Therefore the automatic suggestion is unavailable today. A manager_entry value has no internal market-data proof; it must come from a broker/custodian statement or another authorised accounting source and must be explained in the audit note.",
-        fill=PALE_AMBER,
-        accent=AMBER,
+        "AWS now authenticates successfully to Alpaca paper trading and IEX market data. The deployed VOO check for 3 August 2026 returned a +1.45681278% market return and automatically suggested +$74.3703 on $5,105.00 opening assets. The Manager still reviews the prices, date, weights and preview before finalizing.",
+        fill=PALE_GREEN,
+        accent=GREEN,
     )
     doc.add_heading("What the Manager clicks", level=2)
     add_steps(doc, [
         "Choose a managed fund and a date not already present in Finalized valuation history.",
         "Click Refresh calculation. If a suggestion appears, review its return, prices, weights, and timestamp.",
-        "If the service is unavailable, enter only a prepared externally verified P&L and write the source/reason in Audit note.",
+        "Use the prefilled suggestion when the source, date and component figures are correct. Override it only for an approved accounting adjustment and explain that adjustment in Audit note.",
         "Click Preview calculation. Check opening assets, P&L, closing assets, units, NAV, and investor allocations.",
         "Finalize once only when the preview is correct. The record becomes historical and is not casually editable.",
     ])
@@ -471,7 +472,7 @@ def build() -> None:
         ["Page / control", "What it actually does", "Relationship to other roles"],
         [
             ("Dashboard / Investors", "Shows Investors assigned to this Manager", "Admin controls assignments"),
-            ("Funds → Your Funds", "Shows only Manager-owned products, not the full catalogue", "Operations approval makes new funds investable"),
+            ("Funds → Your Funds", "Shows all 13 assigned demo products plus future Manager-created products", "Operations approval makes new funds investable"),
             ("Create Fund: name / description", "Defines the product identity", "Does not create an Alpaca fund or investor position"),
             ("Strategy / risk", "Classifies mandate and risk presentation", "Investor sees these catalogue labels"),
             ("Underlying search", "Adds ticker components from market lookup", "Defines the simplified market-return model"),
@@ -480,7 +481,7 @@ def build() -> None:
             ("Performance dates / Refresh", "Loads historical performance attribution", "Manager analysis; does not modify holdings"),
             ("Weight fields / Run what-if", "Models a hypothetical allocation", "Scenario only; does not trade or finalize NAV"),
             ("Valuation Fund / Date", "Chooses one managed fund and business date", "Date must not already be finalized"),
-            ("Refresh calculation", "Requests automatic market-data suggestion", "Currently blocked in AWS by Alpaca 401"),
+            ("Refresh calculation", "Requests and prefills the Alpaca market-data suggestion", "Manager reviews it before preview/finalization"),
             ("Daily fund P&L", "Prefilled suggestion or externally verified manual fallback", "Changes NAV/value, never unit count"),
             ("Audit note", "Records source/reason for manual value or adjustment", "Admin/Operations audit evidence"),
             ("Preview calculation", "Shows assets, units, NAV and ownership allocation before committing", "Required review point before Operations settles"),
@@ -591,7 +592,7 @@ def build() -> None:
     add_callout(
         doc,
         "Overall assessment: strong classroom demo, not defect-free production accounting",
-        "The role handoffs and core accounting controls are coherent and usable. The demo is smooth when role windows and a finalized NAV are prepared. It is not fully seamless because external market-data authentication and CI/CD credentials still need repair.",
+        "The role handoffs and core accounting controls are coherent and usable. The demo is smooth when role windows and an unfinalized valuation date are prepared. Alpaca market-data authentication now works; CI/CD credentials and single-instance availability remain operational limitations.",
         fill=PALE_AMBER,
         accent=AMBER,
     )
@@ -599,7 +600,7 @@ def build() -> None:
         doc,
         ["Issue", "Presentation impact", "Recommended handling"],
         [
-            ("Alpaca returns 401 in AWS", "Refresh calculation cannot prefill suggested P&L", "Use prepared audited manual P&L; repair AWS credential later"),
+            ("External market-data outage", "Automatic suggestion may be temporarily unavailable", "Use a prepared authoritative figure with an audit note; do not invent or Google dollar P&L"),
             ("GitHub Actions AWS credentials expired/invalid", "Push does not auto-deploy", "Current release was manually deployed; repair OIDC/static credential setup after presentation"),
             ("Single-instance ASG desired capacity", "Good for small demo, not highly available", "Do not claim enterprise HA; load test before scale claims"),
             ("SPY paid request pending", "Visible blocker if selected", "Use VOO or QQQ for the live workflow"),
