@@ -23,7 +23,7 @@ fundinv-solo/
 | File | Purpose |
 |------|---------|
 | `table/v0.0.1_init_schema.sql` | Full DDL: creates `fundinv` and `fundinv_auth` schemas, including normalized positions, valuations, settlement ledger, indexes, FKs, and constraints |
-| `scripts/v0.0.1_seed_data.sql` | Seed data: 4 roles, 5 users, 20 funds, sample flows, transactions, portfolio holdings, invites |
+| `scripts/v0.0.1_seed_data.sql` | Seed data: 4 roles, 5 users, 13 approved fund products, sample flows, transactions, portfolio holdings, invites |
 
 ### `Server/` — Python FastAPI Backend
 
@@ -35,7 +35,7 @@ fundinv-solo/
 | `dependencies.py` | FastAPI dependency injection: `get_current_user` (JWT decode), `require_role` (RBAC guard) |
 | `appconstants.py` | Centralized role names, permission claims, helper functions — single source of truth for RBAC |
 | `alembic.ini` | Alembic migration config |
-| `alembic/` | Versioned schema migrations; current head is `v0.5.3_fund_catalog_cleanup` |
+| `alembic/` | Versioned schema migrations; current head is `v0.5.4_restore_fund_catalog` |
 | `models/` | SQLAlchemy ORM models across 2 PostgreSQL schemas (`fundinv_auth`, `fundinv`) |
 | `routers/` | 8 FastAPI routers: auth, admin, funds, wallet, portfolio, trading, articles, manager |
 | `services/` | Business logic: auth (bcrypt/JWT), email (yagmail/SMTP), MFA (TOTP), Alpaca API, audit logging |
