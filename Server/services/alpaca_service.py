@@ -106,7 +106,7 @@ def get_snapshots(symbols: list[str]) -> dict:
         resp = requests.get(
             f"{settings.ALPACA_DATA_URL}/v2/stocks/snapshots",
             headers=ALPACA_HEADERS,
-            params={"symbols": symbols_csv},
+            params={"symbols": symbols_csv, "feed": settings.ALPACA_DATA_FEED or "iex"},
             timeout=10,
         )
         resp.raise_for_status()
@@ -123,7 +123,11 @@ def get_bars(
     end: str | None = None,
 ) -> list[dict]:
     try:
-        params = {"timeframe": timeframe, "limit": limit}
+        params = {
+            "timeframe": timeframe,
+            "limit": limit,
+            "feed": settings.ALPACA_DATA_FEED or "iex",
+        }
         if start:
             params["start"] = start
         if end:

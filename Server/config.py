@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     ALPACA_SECRET_KEY: str = ""
     ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
     ALPACA_DATA_URL: str = "https://data.alpaca.markets"
+    # IEX is the stock-data feed available to Alpaca paper/free accounts.
+    ALPACA_DATA_FEED: str = "iex"
 
     class Config:
         env_file = str(Path(__file__).resolve().parent.parent / ".env")

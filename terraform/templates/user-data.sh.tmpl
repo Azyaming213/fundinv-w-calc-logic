@@ -62,6 +62,7 @@ ALPACA_API_KEY=$(echo "$APP_SECRET" | jq -r '.ALPACA_API_KEY // ""')
 ALPACA_SECRET_KEY=$(echo "$APP_SECRET" | jq -r '.ALPACA_SECRET_KEY // ""')
 ALPACA_BASE_URL=$(echo "$APP_SECRET" | jq -r '.ALPACA_BASE_URL // "https://paper-api.alpaca.markets"')
 ALPACA_DATA_URL=$(echo "$APP_SECRET" | jq -r '.ALPACA_DATA_URL // "https://data.alpaca.markets"')
+ALPACA_DATA_FEED=$(echo "$APP_SECRET" | jq -r '.ALPACA_DATA_FEED // "iex"')
 SMTP_EMAIL=$(aws ssm get-parameter --region ${aws_region} --name /fundinv/${environment}/smtp/email --with-decryption --query Parameter.Value --output text)
 SMTP_PASSWORD=$(aws ssm get-parameter --region ${aws_region} --name /fundinv/${environment}/smtp/password --with-decryption --query Parameter.Value --output text)
 S3_ASSETS_BUCKET=${assets_bucket}
