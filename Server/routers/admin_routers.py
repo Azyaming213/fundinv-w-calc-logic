@@ -342,6 +342,8 @@ def list_fund_flows(
         status_message, next_action = status_guidance.get(
             f.status, (f.status.replace("_", " ").title(), "none")
         )
+        if f.status == "pending_fund_transfer" and f.flow_type == "withdrawal":
+            status_message = "Redemption approved - complete only after the outgoing payout is sent"
         settlement_ready = True
         settlement_message = None
         if f.fund_id and f.status in {
