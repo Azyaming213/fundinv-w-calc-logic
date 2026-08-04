@@ -6,7 +6,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy.orm import Session
 
-from models import Fund, FundBalanceEntry, FundPosition, FundValuation, PortfolioHolding
+from models import Fund, FundBalanceEntry, FundComponent, FundPosition, FundValuation, PortfolioHolding
+from services.alpaca_service import get_bars, get_snapshots
 
 
 MONEY = Decimal("0.0001")
@@ -31,6 +32,164 @@ def _previous_valuation(db: Session, fund_id: int, valuation_date: date) -> Fund
         .order_by(FundValuation.valuation_date.desc(), FundValuation.id.desc())
         .first()
     )
+
+
+def _bar_date(bar: dict) -> date | None:
+    timestamp = str(bar.get("t") or "")
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def _historical_market_return(symbol: str, valuation_date: date) -> dict | None:
+    bars = get_bars(
+        symbol,
+        timeframe="1Day",
+        limit=20,
+        start=(valuation_date - timedelta(days=14)).isoformat(),
+        end=(valuation_date + timedelta(days=1)).isoformat(),
+    )
+    eligible = sorted(
+        ((bar_date, bar) for bar in bars if (bar_date := _bar_date(bar)) and bar_date <= valuation_date),
+        key=lambda item: item[0],
+    )
+    if len(eligible) < 2:
+        return None
+    current_date, current_bar = eligible[-1]
+    previous_date, previous_bar = eligible[-2]
+    current_price = dec(current_bar.get("c"))
+    previous_price = dec(previous_bar.get("c"))
+    if current_price <= 0 or previous_price <= 0:
+        return None
+    return {
+        "symbol": symbol,
+        "current_price": current_price,
+        "previous_price": previous_price,
+        "return": current_price / previous_price - Decimal("1"),
+        "as_of": current_date.isoformat(),
+        "previous_as_of": previous_date.isoformat(),
+        "price_source": "alpaca_daily_bars",
+    }
+
+
+def _current_market_return(symbol: str, snapshot: dict) -> dict | None:
+    latest_trade = snapshot.get("latestTrade") or {}
+    daily_bar = snapshot.get("dailyBar") or {}
+    previous_bar = snapshot.get("prevDailyBar") or {}
+    current_price = dec(latest_trade.get("p") or daily_bar.get("c"))
+    previous_price = dec(previous_bar.get("c"))
+    if current_price <= 0 or previous_price <= 0:
+        return None
+    timestamp = latest_trade.get("t") or daily_bar.get("t")
+    return {
+        "symbol": symbol,
+        "current_price": current_price,
+        "previous_price": previous_price,
+        "return": current_price / previous_price - Decimal("1"),
+        "as_of": str(timestamp or datetime.now(timezone.utc).isoformat()),
+        "previous_as_of": str(previous_bar.get("t") or ""),
+        "price_source": "alpaca_snapshot",
+    }
+
+
+def suggest_daily_pnl(db: Session, fund: Fund, valuation_date: date) -> dict:
+    """Calculate a manager-reviewable daily P&L from the fund's market exposure.
+
+    A listed single-instrument fund uses its own ticker. A managed fund uses
+    its configured component weights. The suggestion is deliberately not
+    finalized automatically: the Manager remains responsible for reviewing
+    the figures and any accounting adjustments before committing the NAV.
+    """
+    zero_preview = preview_valuation(db, fund, valuation_date, Decimal("0"))
+    components = db.query(FundComponent).filter(FundComponent.fund_id == fund.id).all()
+    exposure = []
+    for component in components:
+        symbol = (component.symbol or (component.component_fund.ticker if component.component_fund else None) or "").upper()
+        if symbol:
+            exposure.append({
+                "symbol": symbol,
+                "name": component.component_name,
+                "weight": dec(component.target_pct),
+            })
+    if not exposure and fund.ticker:
+        exposure = [{"symbol": fund.ticker.upper(), "name": fund.name, "weight": Decimal("100")}]
+
+    base = {
+        "fund_id": fund.id,
+        "fund_name": fund.name,
+        "valuation_date": valuation_date.isoformat(),
+        "opening_assets": zero_preview["opening_assets"],
+        "opening_nav_per_unit": zero_preview["opening_nav_per_unit"],
+        "available": False,
+        "suggested_daily_pnl": None,
+        "suggested_return_pct": None,
+        "source": None,
+        "as_of": None,
+        "components": [],
+        "missing_symbols": [],
+    }
+    if not exposure:
+        return {**base, "message": "This fund has no market-priced ticker or portfolio components. Enter P&L manually with an audit note."}
+
+    symbols = list(dict.fromkeys(item["symbol"] for item in exposure))
+    today = datetime.now(timezone.utc).date()
+    snapshots = get_snapshots(symbols) if valuation_date >= today else {}
+    market_moves: dict[str, dict] = {}
+    for symbol in symbols:
+        move = _current_market_return(symbol, snapshots.get(symbol, {})) if snapshots else None
+        if move is None:
+            move = _historical_market_return(symbol, valuation_date)
+        if move is not None:
+            market_moves[symbol] = move
+
+    missing = [symbol for symbol in symbols if symbol not in market_moves]
+    if missing:
+        return {
+            **base,
+            "missing_symbols": missing,
+            "message": "Automatic P&L is unavailable because market prices are missing for: " + ", ".join(missing) + ". Enter P&L manually with an audit note.",
+        }
+
+    total_weight = sum((item["weight"] for item in exposure), Decimal("0"))
+    if total_weight <= 0:
+        return {**base, "message": "The fund has no positive portfolio weights. Correct its composition before valuation."}
+
+    weighted_return = Decimal("0")
+    component_rows = []
+    for item in exposure:
+        move = market_moves[item["symbol"]]
+        normalized_weight = item["weight"] / total_weight
+        contribution = normalized_weight * move["return"]
+        weighted_return += contribution
+        component_rows.append({
+            "symbol": item["symbol"],
+            "name": item["name"],
+            "weight_pct": float((normalized_weight * Decimal("100")).quantize(PCT)),
+            "previous_price": float(move["previous_price"]),
+            "current_price": float(move["current_price"]),
+            "return_pct": float((move["return"] * Decimal("100")).quantize(PCT)),
+            "contribution_pct": float((contribution * Decimal("100")).quantize(PCT)),
+            "as_of": move["as_of"],
+        })
+
+    opening_assets = dec(zero_preview["opening_assets"])
+    suggested_pnl = (opening_assets * weighted_return).quantize(MONEY, rounding=ROUND_HALF_UP)
+    as_of_values = [row["as_of"] for row in component_rows if row["as_of"]]
+    sources = {market_moves[symbol]["price_source"] for symbol in symbols}
+    source = sources.pop() if len(sources) == 1 else "alpaca_market_data"
+    return {
+        **base,
+        "available": True,
+        "suggested_daily_pnl": float(suggested_pnl),
+        "suggested_return_pct": float((weighted_return * Decimal("100")).quantize(PCT)),
+        "source": source,
+        "as_of": min(as_of_values) if as_of_values else None,
+        "components": component_rows,
+        "message": "Calculated from market price changes and the fund's configured exposure. Review before finalizing.",
+    }
 
 
 def settlement_valuation_status(
@@ -69,10 +228,12 @@ def settlement_valuation_status(
 
 
 def preview_valuation(db: Session, fund: Fund, valuation_date: date, daily_pnl: Decimal) -> dict:
+    if valuation_date > datetime.now(timezone.utc).date():
+        raise ValueError("A valuation cannot be finalized for a future date")
     existing = db.query(FundValuation).filter_by(
         fund_id=fund.id, valuation_date=valuation_date
     ).first()
-    if existing and existing.status == "finalized" and existing.source == "manager_entry":
+    if existing and existing.status == "finalized" and existing.source in ("manager_entry", "market_data_suggestion"):
         raise ValueError("This fund and date already have a finalized valuation")
 
     previous = _previous_valuation(db, fund.id, valuation_date)
@@ -147,7 +308,15 @@ def preview_valuation(db: Session, fund: Fund, valuation_date: date, daily_pnl: 
     }
 
 
-def finalize_valuation(db: Session, fund: Fund, valuation_date: date, daily_pnl: Decimal, user_id: int, notes: str | None = None) -> tuple[FundValuation, dict]:
+def finalize_valuation(
+    db: Session,
+    fund: Fund,
+    valuation_date: date,
+    daily_pnl: Decimal,
+    user_id: int,
+    notes: str | None = None,
+    source: str = "manager_entry",
+) -> tuple[FundValuation, dict]:
     preview = preview_valuation(db, fund, valuation_date, daily_pnl)
     valuation = db.query(FundValuation).filter_by(
         fund_id=fund.id, valuation_date=valuation_date
@@ -163,7 +332,7 @@ def finalize_valuation(db: Session, fund: Fund, valuation_date: date, daily_pnl:
     valuation.units_outstanding = dec(preview["closing_units"])
     valuation.nav_per_unit = dec(preview["nav_per_unit"])
     valuation.status = "finalized"
-    valuation.source = "manager_entry"
+    valuation.source = source
     valuation.finalized_by_user_id = user_id
     valuation.finalized_at = datetime.now(timezone.utc)
     valuation.notes = notes

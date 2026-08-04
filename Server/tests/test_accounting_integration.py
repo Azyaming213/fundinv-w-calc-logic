@@ -7,14 +7,14 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from database import engine
-from models import Fund, FundBalanceEntry, FundFlow, FundPosition, FundTargeting, FundValuation, InvestmentAccount, InvestmentTransaction, Investor, Manager, Order, PortfolioHolding, User
+from models import Fund, FundBalanceEntry, FundComponent, FundFlow, FundPosition, FundTargeting, FundValuation, InvestmentAccount, InvestmentTransaction, Investor, Manager, Order, PortfolioHolding, User
 from routers.admin_routers import approve_fund_flow, complete_fund_flow, verify_paynow_and_complete
 from routers.funds_routers import simulate_paynow_payment
 from schemas.portfolio_schema import FundFlowActionRequest
 from config import settings
 from services.fund_accounting_service import settle_fund_flow
 from services.order_accounting_service import apply_filled_order
-from services.valuation_service import finalize_valuation, preview_valuation
+from services.valuation_service import finalize_valuation, preview_valuation, suggest_daily_pnl
 from services.pnl_service import (
     compute_fund_return,
     compute_investor_pnl,
@@ -793,6 +793,95 @@ class AccountingIntegrationTests(unittest.TestCase):
         self.assertEqual(len(holdings), 2)
         with self.assertRaisesRegex(ValueError, "already have a finalized valuation"):
             finalize_valuation(self.db, fund, valuation_date, Decimal("500"), manager_user.id)
+
+    def test_manager_daily_pnl_is_suggested_from_single_fund_ticker(self):
+        account = self.db.query(InvestmentAccount).first()
+        fund = self._new_fund("1.00")
+        self.db.add(FundPosition(
+            investment_account_id=account.id,
+            investor_id=account.investor_id,
+            fund_id=fund.id,
+            units=Decimal("10000"),
+            cost_basis=Decimal("10000"),
+        ))
+        self.db.flush()
+
+        snapshot = {
+            fund.ticker: {
+                "latestTrade": {"p": 110, "t": "2026-08-04T15:30:00Z"},
+                "dailyBar": {"c": 110, "t": "2026-08-04T00:00:00Z"},
+                "prevDailyBar": {"c": 100, "t": "2026-08-03T00:00:00Z"},
+            }
+        }
+        with patch("services.valuation_service.get_snapshots", return_value=snapshot):
+            suggestion = suggest_daily_pnl(self.db, fund, datetime.now(timezone.utc).date())
+
+        self.assertTrue(suggestion["available"])
+        self.assertEqual(Decimal(str(suggestion["suggested_return_pct"])), Decimal("10.0"))
+        self.assertEqual(Decimal(str(suggestion["suggested_daily_pnl"])), Decimal("1000.0"))
+        self.assertEqual(suggestion["source"], "alpaca_snapshot")
+        self.assertEqual(suggestion["components"][0]["symbol"], fund.ticker)
+
+    def test_manager_daily_pnl_uses_weighted_managed_fund_components(self):
+        account = self.db.query(InvestmentAccount).first()
+        fund = self._new_fund("1.00")
+        fund.ticker = None
+        self.db.add_all([
+            FundPosition(
+                investment_account_id=account.id,
+                investor_id=account.investor_id,
+                fund_id=fund.id,
+                units=Decimal("10000"),
+                cost_basis=Decimal("10000"),
+            ),
+            FundComponent(fund_id=fund.id, symbol="AAPL", component_name="Apple", asset_type="stock", target_pct=Decimal("60")),
+            FundComponent(fund_id=fund.id, symbol="MSFT", component_name="Microsoft", asset_type="stock", target_pct=Decimal("40")),
+        ])
+        self.db.flush()
+
+        snapshots = {
+            "AAPL": {"latestTrade": {"p": 110}, "prevDailyBar": {"c": 100}},
+            "MSFT": {"latestTrade": {"p": 190}, "prevDailyBar": {"c": 200}},
+        }
+        with patch("services.valuation_service.get_snapshots", return_value=snapshots):
+            suggestion = suggest_daily_pnl(self.db, fund, datetime.now(timezone.utc).date())
+
+        self.assertTrue(suggestion["available"])
+        self.assertEqual(Decimal(str(suggestion["suggested_return_pct"])), Decimal("4.0"))
+        self.assertEqual(Decimal(str(suggestion["suggested_daily_pnl"])), Decimal("400.0"))
+        self.assertEqual(len(suggestion["components"]), 2)
+
+    def test_market_suggestion_source_is_preserved_when_finalized(self):
+        account = self.db.query(InvestmentAccount).first()
+        manager_user = self.db.query(User).filter_by(email="manager@fundinv.com").one()
+        fund = self._new_fund("1.00")
+        self.db.add(FundPosition(
+            investment_account_id=account.id,
+            investor_id=account.investor_id,
+            fund_id=fund.id,
+            units=Decimal("10000"),
+            cost_basis=Decimal("10000"),
+        ))
+        self.db.flush()
+
+        valuation, _ = finalize_valuation(
+            self.db,
+            fund,
+            datetime.now(timezone.utc).date(),
+            Decimal("125"),
+            manager_user.id,
+            "Accepted automatic market calculation",
+            "market_data_suggestion",
+        )
+        self.assertEqual(valuation.source, "market_data_suggestion")
+        with self.assertRaisesRegex(ValueError, "already have a finalized valuation"):
+            finalize_valuation(
+                self.db,
+                fund,
+                datetime.now(timezone.utc).date(),
+                Decimal("125"),
+                manager_user.id,
+            )
 
     def test_post_valuation_subscription_uses_finalized_nav_and_updates_all_ownership(self):
         suffix = uuid.uuid4().hex[:8]

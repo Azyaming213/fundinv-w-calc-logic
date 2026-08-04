@@ -57,13 +57,21 @@ investor account value      = investor units × NAV per unit
 investor daily P&L          = daily fund P&L × opening ownership share
 ```
 
-The Manager enters a fund-level daily P&L, previews its NAV and Investor
-allocation, and finalizes it once. Finalization records the Manager, timestamp,
-source, and optional note. It changes NAV and account values but never creates
-or destroys units. Operations can then settle subscriptions/redemptions at that
-finalized NAV; each settlement appends assets and units at equal value while
-leaving the finalized daily P&L unchanged. The Investor sees only their own
-allocation ledger, while Admin receives a read-only valuation audit ledger.
+Before finalization, FundInv calculates a reviewable daily P&L suggestion from
+market data. A single-ticker fund uses that instrument's close-to-close return;
+a managed fund uses the weighted returns of its configured components. The
+suggestion pre-fills the Manager's P&L input. The Manager may accept it or enter
+an approved accounting adjustment, with the source and audit note preserved.
+If any required market price is unavailable, FundInv does not guess: it keeps
+the field manual and explains which symbol is missing.
+
+The Manager previews the resulting NAV and Investor allocation, then finalizes
+it once. Finalization records the Manager, timestamp, calculation source, and
+optional note. It changes NAV and account values but never creates or destroys
+units. Operations can then settle subscriptions/redemptions at that finalized
+NAV; each settlement appends assets and units at equal value while leaving the
+finalized daily P&L unchanged. The Investor sees only their own allocation
+ledger, while Admin receives a read-only valuation audit ledger.
 
 Subscriptions and redemptions use the post-P&L NAV, preventing dilution.
 External cash flows change units and assets in equal value and therefore do not
@@ -76,8 +84,10 @@ become investment P&L. Fund return compounds daily returns:
 `FUND_FLOW_PROVIDER=paynow_demo` is the default local demonstration and never
 moves real money. Use `manual` for independently verified external transfers.
 Set it to `stripe` only when valid test credentials and signed webhook
-forwarding are configured. SMTP and Alpaca are optional for core accounting
-tests; they are required only for real email delivery and external paper orders.
+forwarding are configured. SMTP remains optional for core accounting tests.
+Alpaca market-data credentials enable the automatic Manager P&L suggestion and
+external paper orders; without market data, valuation remains available through
+the explicit manual-entry fallback.
 
 ## Accounting sources of truth
 

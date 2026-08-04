@@ -10,6 +10,8 @@ type Fund = { id: number; name: string; fund_type: string; is_active: boolean; r
 type Allocation = { investor_id: number; investment_account_ids: number[]; investor_name: string; investor_email: string; units: number; opening_share_pct: number; allocated_pnl: number; opening_value: number; closing_value_before_flows: number };
 type Preview = { fund_id: number; fund_name: string; valuation_date: string; previous_valuation_date: string | null; opening_assets: number; opening_units: number; opening_nav_per_unit: number; daily_pnl: number; closing_assets_before_flows: number; closing_assets: number; closing_units: number; nav_per_unit: number; allocated_pnl_total: number; external_ownership_pnl: number; allocations: Allocation[]; status?: string };
 type History = { id: number; fund_name: string; valuation_date: string; opening_assets: number; daily_pnl: number; net_flow: number; closing_assets: number; units_outstanding: number; nav_per_unit: number; source: string; finalized_by_name: string; notes: string | null };
+type SuggestionComponent = { symbol: string; name: string; weight_pct: number; previous_price: number; current_price: number; return_pct: number; contribution_pct: number; as_of: string };
+type Suggestion = { fund_id: number; fund_name: string; valuation_date: string; opening_assets: number; opening_nav_per_unit: number; available: boolean; suggested_daily_pnl: number | null; suggested_return_pct: number | null; source: string | null; as_of: string | null; components: SuggestionComponent[]; missing_symbols: string[]; message: string };
 
 const fmt = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
 
@@ -21,6 +23,9 @@ export default function ManagerValuationsPage() {
   const [dailyPnl, setDailyPnl] = useState('');
   const [notes, setNotes] = useState('');
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [suggestionError, setSuggestionError] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -42,10 +47,47 @@ export default function ManagerValuationsPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const refreshSuggestion = useCallback(async () => {
+    if (!fundId || !valuationDate) {
+      setSuggestion(null);
+      return;
+    }
+    setSuggestionLoading(true);
+    setSuggestionError('');
+    try {
+      const result = await api.get<Suggestion>(`/api/manager/valuations/suggestion?fund_id=${encodeURIComponent(fundId)}&valuation_date=${encodeURIComponent(valuationDate)}`);
+      setSuggestion(result);
+      setDailyPnl(result.available && result.suggested_daily_pnl !== null ? result.suggested_daily_pnl.toFixed(2) : '');
+      setPreview(null);
+    } catch (err) {
+      setSuggestion(null);
+      setDailyPnl('');
+      setSuggestionError((err as { message?: string }).message || 'Unable to calculate P&L from market data');
+    } finally {
+      setSuggestionLoading(false);
+    }
+  }, [fundId, valuationDate]);
+
+  useEffect(() => { void refreshSuggestion(); }, [refreshSuggestion]);
+
   async function submit(mode: 'preview' | 'finalize') {
     setLoading(true); setError(''); setMessage('');
     try {
-      const body = { fund_id: Number(fundId), valuation_date: valuationDate, daily_pnl: Number(dailyPnl), notes: notes || null };
+      const acceptedSuggestion = Boolean(
+        suggestion?.available
+        && suggestion.suggested_daily_pnl !== null
+        && Math.abs(Number(dailyPnl) - suggestion.suggested_daily_pnl) < 0.005
+      );
+      const automaticNote = acceptedSuggestion
+        ? `Accepted automatic market-data P&L calculation from ${suggestion?.source || 'market data'} as of ${suggestion?.as_of || valuationDate}.`
+        : null;
+      const body = {
+        fund_id: Number(fundId),
+        valuation_date: valuationDate,
+        daily_pnl: Number(dailyPnl),
+        notes: notes || automaticNote,
+        calculation_source: acceptedSuggestion ? 'market_data_suggestion' : 'manager_entry',
+      };
       const result = await api.post<Preview>(`/api/manager/valuations/${mode}`, body);
       setPreview(result);
       if (mode === 'finalize') {
@@ -63,7 +105,23 @@ export default function ManagerValuationsPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div><label className="text-sm font-medium text-fundinv-primary">Fund</label><select value={fundId} onChange={(e) => { setFundId(e.target.value); setPreview(null); }} className="mt-1.5 w-full px-3 py-2 border border-fundinv-border rounded-md bg-white text-sm"><option value="">Select fund</option>{funds.map((fund) => <option key={fund.id} value={fund.id}>{fund.name}</option>)}</select></div>
         <Input label="Valuation date" type="date" value={valuationDate} onChange={(e) => { setValuationDate(e.target.value); setPreview(null); }} />
-        <Input label="Daily fund P&L (USD)" type="number" step="0.01" value={dailyPnl} onChange={(e) => { setDailyPnl(e.target.value); setPreview(null); }} placeholder="e.g. 500 or -125" />
+        <Input label="Daily fund P&L (USD)" type="number" step="0.01" value={dailyPnl} onChange={(e) => { setDailyPnl(e.target.value); setPreview(null); }} placeholder={suggestionLoading ? 'Calculating from market data...' : 'e.g. 500 or -125'} />
+      </div>
+      <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${suggestion?.available ? 'border-blue-200 bg-blue-50 text-blue-950' : 'border-amber-200 bg-amber-50 text-amber-950'}`}>
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="font-medium">Automatic market P&amp;L</p>
+            {suggestionLoading && <p className="mt-1">Calculating the fund&apos;s market movement...</p>}
+            {!suggestionLoading && suggestion?.available && suggestion.suggested_daily_pnl !== null && suggestion.suggested_return_pct !== null && <>
+              <p className="mt-1"><span className="font-semibold">{fmt(suggestion.suggested_daily_pnl)}</span> from a {suggestion.suggested_return_pct >= 0 ? '+' : ''}{suggestion.suggested_return_pct.toFixed(4)}% fund return.</p>
+              <p className="mt-1 text-xs">The value has been placed in the P&amp;L field for review. Edit it only when an approved accounting adjustment is required.</p>
+            </>}
+            {!suggestionLoading && suggestion && !suggestion.available && <p className="mt-1">{suggestion.message}</p>}
+            {!suggestionLoading && suggestionError && <p className="mt-1">{suggestionError}</p>}
+          </div>
+          <button type="button" disabled={suggestionLoading || !fundId} onClick={() => void refreshSuggestion()} className="shrink-0 rounded-md border border-current px-3 py-1.5 text-xs font-medium disabled:opacity-50">Refresh calculation</button>
+        </div>
+        {suggestion?.available && suggestion.components.length > 0 && <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs">{suggestion.components.map((component) => <span key={component.symbol}><strong>{component.symbol}</strong> {component.weight_pct.toFixed(2)}% weight, {component.return_pct >= 0 ? '+' : ''}{component.return_pct.toFixed(4)}% return</span>)}</div>}
       </div>
       <div className="mt-4"><Input label="Audit note (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Reason or source for today’s P&L" /></div>
       <div className="mt-4 flex gap-2"><Button variant="secondary" disabled={loading || !fundId || dailyPnl === ''} onClick={() => submit('preview')}>{loading ? 'Calculating…' : 'Preview calculation'}</Button><Button disabled={loading || !preview} onClick={() => submit('finalize')}>Finalize valuation</Button></div>

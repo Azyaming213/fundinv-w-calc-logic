@@ -368,8 +368,9 @@ def snapshot_daily_holdings(db: Session, as_of: Optional[datetime] = None) -> in
             .filter(FundValuation.fund_id == fund.id, FundValuation.valuation_date == snapshot_date)
             .first()
         )
-        if valuation is not None and valuation.status == "finalized" and valuation.source == "manager_entry":
-            # Manager-entered P&L is the authoritative challenge workflow.
+        if valuation is not None and valuation.status == "finalized" and valuation.source in ("manager_entry", "market_data_suggestion"):
+            # Manager-finalized P&L is the authoritative challenge workflow,
+            # whether entered manually or accepted from the market suggestion.
             # Scheduled snapshots must never rewrite its performance fields.
             continue
         if valuation is None:

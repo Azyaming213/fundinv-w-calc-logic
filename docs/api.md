@@ -83,8 +83,9 @@ Fund and investor management for the manager role.
 | POST | `/fund-assign` | Token | `fund_targeting:write` | Assign investor to fund (optional: invest amount) |
 | GET | `/transactions` | Token | `transactions:read` | List manager's trade orders |
 | GET | `/transactions/export` | Token | `transactions:read` | Export transactions as CSV |
-| POST | `/valuations/preview` | Token | `funds:update` | Preview Manager-entered daily P&L, NAV, and Investor allocations without writing |
-| POST | `/valuations/finalize` | Token | `funds:update` | Finalize a managed fund valuation once with an audit note |
+| GET | `/valuations/suggestion` | Token | `funds:update` | Calculate a reviewable daily P&L from Alpaca market prices and the fund's configured exposure |
+| POST | `/valuations/preview` | Token | `funds:update` | Preview the accepted or adjusted daily P&L, NAV, and Investor allocations without writing |
+| POST | `/valuations/finalize` | Token | `funds:update` | Finalize a managed fund valuation once with its calculation source and audit note |
 | GET | `/valuations` | Token | `investors:read_assigned` | List valuations for funds owned by the current Manager |
 
 ---

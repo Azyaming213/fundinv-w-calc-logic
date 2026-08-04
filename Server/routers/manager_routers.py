@@ -1,6 +1,7 @@
 import csv
 from io import StringIO
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
@@ -15,7 +16,7 @@ from services.alpaca_service import place_order, get_order, get_positions, searc
 from services.audit_service import log_event, AUDIT_ACTIONS
 from services.pnl_service import compute_fund_return
 from services.order_accounting_service import apply_filled_order
-from services.valuation_service import finalize_valuation, preview_valuation
+from services.valuation_service import finalize_valuation, preview_valuation, suggest_daily_pnl
 import appconstants as AppConstants
 
 from pydantic import BaseModel, Field
@@ -39,6 +40,7 @@ class DailyValuationRequest(BaseModel):
     valuation_date: date
     daily_pnl: float
     notes: str | None = Field(default=None, max_length=1000)
+    calculation_source: Literal["manager_entry", "market_data_suggestion"] = "manager_entry"
 
 
 def _managed_funds(db: Session, manager: Manager) -> list[Fund]:
@@ -88,6 +90,24 @@ def preview_daily_valuation(
     return StandardResponse(success=True, data=_enrich_allocations(db, result), error=None)
 
 
+@router.get("/valuations/suggestion", response_model=StandardResponse)
+def suggest_daily_valuation(
+    fund_id: int = Query(..., gt=0),
+    valuation_date: date = Query(...),
+    current_user: User = Depends(require_claim(AppConstants.CLAIMS["updateFunds"])),
+    db: Session = Depends(get_db),
+):
+    manager = _get_manager(db, current_user.email)
+    if manager is None:
+        raise HTTPException(status_code=404, detail="Manager profile not found")
+    fund = _managed_approved_fund(db, manager, fund_id)
+    try:
+        result = suggest_daily_pnl(db, fund, valuation_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return StandardResponse(success=True, data=result, error=None)
+
+
 @router.post("/valuations/finalize", response_model=StandardResponse)
 def finalize_daily_valuation(
     request: DailyValuationRequest,
@@ -100,7 +120,13 @@ def finalize_daily_valuation(
     fund = _managed_approved_fund(db, manager, request.fund_id)
     try:
         valuation, result = finalize_valuation(
-            db, fund, request.valuation_date, request.daily_pnl, current_user.id, request.notes,
+            db,
+            fund,
+            request.valuation_date,
+            request.daily_pnl,
+            current_user.id,
+            request.notes,
+            request.calculation_source,
         )
         log_event(
             db=db,
@@ -114,6 +140,7 @@ def finalize_daily_valuation(
                 "valuation_date": request.valuation_date.isoformat(),
                 "daily_pnl": result["daily_pnl"],
                 "nav_per_unit": result["nav_per_unit"],
+                "calculation_source": request.calculation_source,
             },
             status="success",
             commit=False,
