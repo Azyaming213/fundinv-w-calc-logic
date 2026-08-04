@@ -114,8 +114,8 @@ ECR_REGISTRY="${account_id}.dkr.ecr.${aws_region}.amazonaws.com"
 aws ecr get-login-password --region ${aws_region} | \
   docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-docker pull "$ECR_REGISTRY/${project_name}-backend-${environment}:pnl-denominator-v3" &
-docker pull "$ECR_REGISTRY/${project_name}-frontend-${environment}:pnl-sequencing-v2" &
+docker pull "$ECR_REGISTRY/${project_name}-backend-${environment}:${image_tag}" &
+docker pull "$ECR_REGISTRY/${project_name}-frontend-${environment}:${image_tag}" &
 docker pull nginx:alpine &
 wait
 
@@ -134,14 +134,14 @@ docker run -d --name fundinv-backend \
   --network fundinv-network \
   --env-file /opt/fundinv/.env \
   -p 127.0.0.1:8000:8000 \
-  "$ECR_REGISTRY/${project_name}-backend-${environment}:pnl-denominator-v3"
+  "$ECR_REGISTRY/${project_name}-backend-${environment}:${image_tag}"
 
 docker run -d --name fundinv-frontend \
   --restart unless-stopped \
   --network fundinv-network \
   -e NEXT_PUBLIC_API_URL= \
   -p 127.0.0.1:3000:3000 \
-  "$ECR_REGISTRY/${project_name}-frontend-${environment}:pnl-sequencing-v2"
+  "$ECR_REGISTRY/${project_name}-frontend-${environment}:${image_tag}"
 
 docker run -d --name fundinv-nginx \
   --restart unless-stopped \

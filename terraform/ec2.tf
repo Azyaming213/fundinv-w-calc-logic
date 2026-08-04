@@ -15,6 +15,7 @@ resource "aws_launch_template" "app" {
     aws_region     = var.aws_region
     project_name   = var.project_name
     environment    = var.environment
+    image_tag      = var.application_image_tag
     db_secret_arn  = aws_secretsmanager_secret.db.arn
     app_secret_arn = aws_secretsmanager_secret.app.arn
     backups_bucket = aws_s3_bucket.backups.bucket

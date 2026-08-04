@@ -17,6 +17,12 @@ variable "project_name" {
   default     = "fundinv"
 }
 
+variable "application_image_tag" {
+  description = "Immutable ECR tag used by both FundInv application images"
+  type        = string
+  default     = "c0f1e9a54d7a59a3ab80a348dddda126e46952f8"
+}
+
 variable "key_name" {
   description = "SSH key pair name for EC2 instances"
   type        = string
