@@ -62,7 +62,13 @@ export default function ManagerValuationsPage() {
     } catch (err) {
       setSuggestion(null);
       setDailyPnl('');
-      setSuggestionError((err as { message?: string }).message || 'Unable to calculate P&L from market data');
+      const apiError = err as { status?: number; message?: string };
+      setSuggestionError(
+        (apiError.status !== undefined && apiError.status >= 500)
+          || apiError.message === 'Service temporarily unavailable. Please try again.'
+          ? 'Market data service temporarily unavailable. Please try again.'
+          : apiError.message || 'Unable to calculate P&L from market data'
+      );
     } finally {
       setSuggestionLoading(false);
     }

@@ -5,6 +5,31 @@ import type { ApiError } from './types';
 // ALB -> Nginx). Local development can still override this in Client/.env.local.
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
+type ApiPayload = {
+  success?: boolean;
+  data?: unknown;
+  detail?: unknown;
+  error?: { message?: string };
+};
+
+async function readPayload(response: Response): Promise<ApiPayload | null> {
+  const body = await response.text();
+  if (!body.trim()) return {};
+
+  try {
+    return JSON.parse(body) as ApiPayload;
+  } catch {
+    return null;
+  }
+}
+
+function unavailableError(status: number): ApiError {
+  return {
+    status,
+    message: 'Service temporarily unavailable. Please try again.',
+  } as ApiError;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -26,10 +51,10 @@ async function request<T>(
     if (onLoginPage) {
       // A 401 on the login page means wrong credentials, not an expired session.
       // Let the actual backend error message pass through below.
-      const json = await response.json().catch(() => ({}));
+      const json = await readPayload(response);
       throw {
         status: 401,
-        message: json.detail || 'Invalid email or password',
+        message: typeof json?.detail === 'string' ? json.detail : 'Invalid email or password',
       } as ApiError;
     }
 
@@ -41,7 +66,10 @@ async function request<T>(
     throw { status: 401, message: 'Session expired' } as ApiError;
   }
 
-  const json = await response.json();
+  const json = await readPayload(response);
+  if (!json) {
+    throw unavailableError(response.status);
+  }
 
   if (!response.ok) {
     let message = 'Request failed';

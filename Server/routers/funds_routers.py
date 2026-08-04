@@ -316,25 +316,10 @@ def list_positions(
     if not investor:
         raise HTTPException(status_code=404, detail="Investor not found")
 
-    positions = get_positions()
-
+    # Alpaca is a shared paper-trading account, not an investor-level book of
+    # record. Do not expose its global positions as though they belonged to the
+    # signed-in investor. The FundInv records below are investor scoped.
     enriched = []
-    for pos in positions:
-        symbol = pos.get("symbol", "")
-        fund = db.query(Fund).filter(Fund.ticker == symbol).first()
-        enriched.append({
-            "symbol": symbol,
-            "qty": pos.get("qty", "0"),
-            "avg_entry_price": pos.get("avg_entry_price", "0"),
-            "current_price": pos.get("current_price", "0"),
-            "market_value": pos.get("market_value", "0"),
-            "unrealized_pl": pos.get("unrealized_pl", "0"),
-            "unrealized_plpc": pos.get("unrealized_plpc", "0"),
-            "side": pos.get("side", "long"),
-            "fund_name": fund.name if fund else symbol,
-            "fund_id": fund.id if fund else None,
-            "strategy": fund.strategy if fund else None,
-        })
 
     fund_investments = (
         db.query(FundInvestment)

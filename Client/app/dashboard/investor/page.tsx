@@ -10,7 +10,6 @@ import { api, API_BASE } from '../../lib/api';
 import { getUser } from '../../lib/auth';
 import type {
   Transaction,
-  Position,
   PortfolioSummary,
   FundInvestmentItem,
   Fund,
@@ -66,9 +65,7 @@ export default function InvestorDashboard() {
         net_flow: number;
     }>>([]);
 
-    const [positions, setPositions] = useState<Position[]>([]);
     const [fundInvestments, setFundInvestments] = useState<FundInvestmentItem[]>([]);
-    const [positionsError, setPositionsError] = useState<string | null>(null);
 
     const [showAccountModal, setShowAccountModal] = useState(false);
     const [accountName, setAccountName] = useState('');
@@ -145,20 +142,20 @@ export default function InvestorDashboard() {
         } finally { setPeriodLoading(false); }
     };
 
-    const fetchPositions = async () => {
+    const fetchFundInvestments = async () => {
         try {
-            const data = await api.get<{ positions: Position[]; fund_investments: FundInvestmentItem[] }>('/api/funds/positions');
-            setPositions(data.positions || []);
+            const data = await api.get<{ fund_investments: FundInvestmentItem[] }>('/api/funds/positions');
             setFundInvestments(data.fund_investments || []);
-            setPositionsError(null);
-        } catch (err) {
-            setPositionsError((err as { message?: string }).message || 'Failed to load positions');
+        } catch {
+            // This history is supplementary to the accounting summary, so a
+            // temporary failure must not prevent the dashboard from loading.
+            setFundInvestments([]);
         }
     };
 
     useEffect(() => {
         fetchData();
-        fetchPositions();
+        fetchFundInvestments();
     }, []);
 
     const fmt = (n: number) =>
@@ -667,52 +664,6 @@ export default function InvestorDashboard() {
                         </Card>
                     </div>
 
-                    {positions.length > 0 ? (
-                        <Card title="Underlying Portfolio Holdings">
-                            <p className="px-6 pb-3 text-xs text-fundinv-muted">Read-only look-through of securities managed on your behalf. Redemption is requested at fund level.</p>
-                            <div className="overflow-x-auto -mx-6">
-                                <table className="w-full text-sm">
-                                    <thead>
-                                        <tr className="border-b border-fundinv-border">
-                                            <th className="text-left py-2 px-6 font-medium text-fundinv-muted">Symbol</th>
-                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Qty</th>
-                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Mkt Value</th>
-                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Avg Price</th>
-                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">Current</th>
-                                            <th className="text-right py-2 px-2 font-medium text-fundinv-muted">P&L</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {positions.map((p) => (
-                                            <tr key={p.symbol} className="border-b border-fundinv-border last:border-0 hover:bg-fundinv-surface/50">
-                                                <td className="py-2.5 px-6">
-                                                    <span className="font-medium text-fundinv-primary">{p.symbol}</span>
-                                                    {p.fund_name && <p className="text-xs text-fundinv-muted">{p.fund_name}</p>}
-                                                </td>
-                                                <td className="py-2.5 px-2 text-right font-mono text-fundinv-muted">{Number(p.qty).toFixed(4)}</td>
-                                                <td className="py-2.5 px-2 text-right font-mono text-fundinv-primary font-medium">{fmt(p.market_value)}</td>
-                                                <td className="py-2.5 px-2 text-right font-mono text-fundinv-muted">{fmt(p.avg_entry_price)}</td>
-                                                <td className="py-2.5 px-2 text-right font-mono text-fundinv-muted">{fmt(p.current_price)}</td>
-                                                <td className={`py-2.5 px-2 text-right font-mono font-medium ${pnlColor(p.unrealized_pl)}`}>
-                                                    {fmt(p.unrealized_pl)} ({Number(p.unrealized_plpc).toFixed(1)}%)
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </Card>
-                    ) : (
-                        <Card title="Underlying Portfolio Holdings">
-                            <div className="h-20 flex items-center justify-center text-sm text-fundinv-muted">
-                                {positionsError ? (
-                                    <span className="text-fundinv-danger">{positionsError}</span>
-                                ) : (
-                                    'No underlying holdings have been reported by your manager yet.'
-                                )}
-                            </div>
-                        </Card>
-                    )}
                     {fundInvestments.length > 0 && (
                         <Card title="Fund Investments">
                             <div className="overflow-x-auto -mx-6">
