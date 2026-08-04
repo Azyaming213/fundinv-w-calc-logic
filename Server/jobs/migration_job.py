@@ -20,3 +20,4 @@ def run_pending_migrations():
         print("[MIGRATION] Database migrations applied successfully")
     except Exception as e:
         print(f"[MIGRATION] Error running migrations: {e}")
+        raise

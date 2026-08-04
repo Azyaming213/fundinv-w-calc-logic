@@ -13,9 +13,6 @@ scheduler = BackgroundScheduler(timezone=settings.SCHEDULER_TIMEZONE)
 
 
 def start_scheduler():
-    from jobs.migration_job import run_pending_migrations
-    run_pending_migrations()
-
     scheduler.add_job(
         send_weekly_summaries,
         CronTrigger(day_of_week="mon", hour=9, minute=0),

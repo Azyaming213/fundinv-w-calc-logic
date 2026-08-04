@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers import auth_routers, funds_routers, portfolio_routers, admin_routers, articles_routers, trading_routers, manager_routers, feedback_routers
 from jobs.scheduler import start_scheduler, stop_scheduler
+from jobs.migration_job import run_pending_migrations
 from jobs.pnl_job import run_daily_pnl_snapshot
 from database import SessionLocal
 from models import Role, RoleClaim
@@ -44,6 +45,10 @@ def sync_role_claims():
 async def lifespan(app: FastAPI):
     if settings.ENVIRONMENT.lower() == "production" and settings.COOKIE_SECURE.lower() != "true":
         raise RuntimeError("COOKIE_SECURE must be true in production")
+    # Schema upgrades are a deployment concern and must not depend on whether
+    # background jobs are enabled. Run them before any database-backed startup
+    # work so an incompatible release never begins serving traffic.
+    run_pending_migrations()
     scheduler_enabled = settings.ENABLE_SCHEDULER.lower() == "true"
     if scheduler_enabled:
         start_scheduler()
