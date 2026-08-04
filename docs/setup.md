@@ -104,7 +104,7 @@ put `.env` in Git or a portable ZIP.
 
 ## Database safety and migrations
 
-Current migration head: `v0.5.4_restore_fund_catalog`.
+Current migration head: `v0.5.4_expose_demo_catalog`.
 
 - Base schema/seed SQL runs only when `fundinv_auth.users` does not exist.
 - `run.sh` applies pending Alembic migrations; it does not reset data.

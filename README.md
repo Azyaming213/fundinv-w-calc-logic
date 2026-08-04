@@ -35,7 +35,7 @@ fundinv-solo/
 | `dependencies.py` | FastAPI dependency injection: `get_current_user` (JWT decode), `require_role` (RBAC guard) |
 | `appconstants.py` | Centralized role names, permission claims, helper functions — single source of truth for RBAC |
 | `alembic.ini` | Alembic migration config |
-| `alembic/` | Versioned schema migrations; current head is `v0.5.4_restore_fund_catalog` |
+| `alembic/` | Versioned schema migrations; current head is `v0.5.4_expose_demo_catalog` |
 | `models/` | SQLAlchemy ORM models across 2 PostgreSQL schemas (`fundinv_auth`, `fundinv`) |
 | `routers/` | 8 FastAPI routers: auth, admin, funds, wallet, portfolio, trading, articles, manager |
 | `services/` | Business logic: auth (bcrypt/JWT), email (yagmail/SMTP), MFA (TOTP), Alpaca API, audit logging |

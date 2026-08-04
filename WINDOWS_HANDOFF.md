@@ -128,7 +128,7 @@ Neither setup nor `run.sh` resets an existing database.
 
 - Base schema and seed SQL run only if `fundinv_auth.users` does not exist.
 - Alembic applies only pending migrations.
-- Current migration head: `v0.5.4_restore_fund_catalog`
+- Current migration head: `v0.5.4_expose_demo_catalog`
 - The `v0.4.6`–`v0.4.9` migrations normalize fund flows, repair historical NAV/unit records, reconcile cost basis/principal, and rebuild the legacy display cache.
 
 Do not run this unless deliberately deleting the Windows database:
@@ -260,7 +260,7 @@ The P&L service also preserves externally sourced/outstanding units that did not
 - Playwright cross-role suite previously passed 10/10 using the production frontend.
 - On the Windows laptop, the final non-mutating Playwright run passed 10/10; the opt-in demo PayNow lifecycle test also passed separately.
 - The Windows PayNow test confirmed the fixed requested amount, exact recorded payment, single Operations **Verify & Complete** action, idempotent completion, and exactly one accounting-ledger entry.
-- Database migration reached `v0.5.4_restore_fund_catalog`.
+- Database migration reached `v0.5.4_expose_demo_catalog`.
 - NAV/assets, account principal/cost basis, and normalized-position/cache equations reconciled with zero variance.
 - Live `/api/test` returned HTTP 200.
 - Live `/login` returned HTTP 200.

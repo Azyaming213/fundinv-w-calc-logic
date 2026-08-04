@@ -108,7 +108,7 @@ credentials, API keys, or AWS secrets.
 > underlying instruments managed inside a fund and are not separate products
 > sold directly to the Investor.
 
-After the catalogue-restoration migration, the approved demonstration suite is
+After the demonstration-investor visibility migration, the approved suite is
 13 products: QQQ, VOO, VTI, SPY, BND, AGG, VYM, SCHD, SOXL, TQQQ, TLT, SCHR,
 and VIG. High-risk products remain clearly labelled.
 
@@ -271,11 +271,14 @@ The correct historical numbers are:
   and AMZN.
 - Those seven stocks were correctly removed from the Investor fund catalogue.
 - The resulting legitimate demonstration suite contains **13 fund products**.
-- The deployed database had only QQQ, VOO, and SOXL, with SOXL hidden from the
-  default Investor by the old high-risk targeting rule. That is why only two
-  funds appeared.
-- Migration `v0.5.4_restore_fund_catalog` restores the 13 products and exposes
-  them to active investors while retaining their risk labels.
+- The Manager's **Your Funds (3)** page lists only the funds owned by that
+  Manager; it is not a count of every product in the database.
+- The demonstration Investor saw only two products because its visibility
+  targeting rows did not expose the complete catalogue.
+- Migration `v0.5.4_expose_demo_catalog` changes only
+  `investor@fundinv.com`: it exposes the 13 existing active, approved products
+  while retaining their risk labels. It does not recreate, activate, approve,
+  or modify any fund and does not affect other investors.
 
 ## Questions the audience may ask
 
