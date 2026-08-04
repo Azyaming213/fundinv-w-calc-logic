@@ -108,9 +108,9 @@ credentials, API keys, or AWS secrets.
 > underlying instruments managed inside a fund and are not separate products
 > sold directly to the Investor.
 
-After the demonstration-investor visibility migration, the approved suite is
-13 products: QQQ, VOO, VTI, SPY, BND, AGG, VYM, SCHD, SOXL, TQQQ, TLT, SCHR,
-and VIG. High-risk products remain clearly labelled.
+The approved suite contains 13 products: QQQ, VOO, VTI, SPY, BND, AGG, VYM,
+SCHD, SOXL, TQQQ, TLT, SCHR, and VIG. High-risk products remain clearly
+labelled.
 
 ### Step 4 - Investor submits a subscription (2 minutes)
 
@@ -273,12 +273,10 @@ The correct historical numbers are:
 - The resulting legitimate demonstration suite contains **13 fund products**.
 - The Manager's **Your Funds (3)** page lists only the funds owned by that
   Manager; it is not a count of every product in the database.
-- The demonstration Investor saw only two products because its visibility
-  targeting rows did not expose the complete catalogue.
-- Migration `v0.5.4_expose_demo_catalog` changes only
-  `investor@fundinv.com`: it exposes the 13 existing active, approved products
-  while retaining their risk labels. It does not recreate, activate, approve,
-  or modify any fund and does not affect other investors.
+- Before final demonstration setup, the Investor owned only QQQ and VOO. That
+  was a holdings count, not the size of the full catalogue.
+- Demonstration setup uses the normal subscription, demo PayNow, and Operations
+  settlement workflow to create actual Investor fund-unit holdings.
 
 ## Questions the audience may ask
 

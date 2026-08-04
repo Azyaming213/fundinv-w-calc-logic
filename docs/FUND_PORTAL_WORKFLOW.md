@@ -102,4 +102,4 @@ Manager paper orders are persisted immediately after provider acceptance. Fill
 quantity, price, allocation, and transaction accounting are applied only after
 Alpaca confirms `filled`, with an idempotent one-minute reconciliation retry.
 
-Current migration head: `v0.5.4_expose_demo_catalog`.
+Current migration head: `v0.5.3_fund_catalog_cleanup`.
