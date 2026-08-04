@@ -73,7 +73,7 @@ test('manager creates, Operations approves, and Investor sees a live fund', asyn
   await page.getByLabel('Password').fill('admin123');
   await page.locator('main form').getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveURL(/\/dashboard\/operations/);
-  const approval = await page.request.post(`http://localhost:8000/api/admin/fund-reviews/${fundId}`, {
+  const approval = await page.request.post(`/api/admin/fund-reviews/${fundId}`, {
     data: { decision: 'approve', notes: 'Playwright automatic visibility verification' },
   });
   expect(approval.status()).toBe(200);

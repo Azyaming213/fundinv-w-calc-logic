@@ -72,7 +72,7 @@ test('demo PayNow locks the amount and Operations completes it in one action', a
   await expect(page.getByText('Demo Payment Recorded')).toBeVisible();
   await expect(page.getByText(`Requested and paid: USD ${amount.toFixed(2)}.`)).toBeVisible();
 
-  const tamperAttempt = await page.request.post(`http://localhost:8000/api/funds/fund-flows/${flow.id}/simulate-paynow`, {
+  const tamperAttempt = await page.request.post(`/api/funds/fund-flows/${flow.id}/simulate-paynow`, {
     data: { amount: amount + 1000 },
   });
   expect(tamperAttempt.status()).toBe(200);
@@ -102,7 +102,7 @@ test('demo PayNow locks the amount and Operations completes it in one action', a
   await expect(row.getByRole('button', { name: 'Verify & Complete' })).toHaveCount(0);
 
   const repeatedCompletion = await page.request.post(
-    `http://localhost:8000/api/admin/fund-flows/${flow.id}/verify-complete`,
+    `/api/admin/fund-flows/${flow.id}/verify-complete`,
     { data: {} },
   );
   expect(repeatedCompletion.status()).toBe(200);

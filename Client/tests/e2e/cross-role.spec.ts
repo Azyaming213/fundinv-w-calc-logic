@@ -28,11 +28,11 @@ test('investor uses an HTTP-only session and sees reporting/security', async ({ 
   await page.goto('/dashboard/investor/funds');
   await expect(page.getByText('Loading funds...')).not.toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('button', { name: 'Buy Now' })).toHaveCount(0);
-  const fundsResponse = await page.request.get('http://localhost:8000/api/funds/');
+  const fundsResponse = await page.request.get('/api/funds/');
   expect(fundsResponse.status()).toBe(200);
   const fundProducts = (await fundsResponse.json()).data.funds as Array<{ fund_type: string }>;
   expect(fundProducts.every((fund) => fund.fund_type !== 'stock')).toBe(true);
-  const directTrade = await page.request.post('http://localhost:8000/api/trading/buy', {
+  const directTrade = await page.request.post('/api/trading/buy', {
     data: { investment_account_id: 1, symbol: 'AAPL', amount: 1 },
   });
   expect(directTrade.status()).toBe(403);
@@ -41,7 +41,7 @@ test('investor uses an HTTP-only session and sees reporting/security', async ({ 
   await expect(page.getByRole('button', { name: 'Redeem' })).toHaveCount(0);
 
   const period = 'start_date=2000-01-01T00%3A00%3A00Z&end_date=2100-01-01T00%3A00%3A00Z';
-  const pnlResponse = await page.request.get(`http://localhost:8000/api/portfolio/pnl?${period}`);
+  const pnlResponse = await page.request.get(`/api/portfolio/pnl?${period}`);
   expect(pnlResponse.status()).toBe(200);
   const pnlBody = await pnlResponse.json();
   const pnl = pnlBody.data.pnl as {
@@ -54,7 +54,7 @@ test('investor uses an HTTP-only session and sees reporting/security', async ({ 
   expect(pnl.unrealized_pnl).toBeCloseTo(pnl.total_pnl - pnl.realized_pnl, 6);
   for (const value of Object.values(pnl.fund_returns_pct)) expect(Number.isFinite(value)).toBe(true);
 
-  const holdingsResponse = await page.request.get('http://localhost:8000/api/portfolio/holdings');
+  const holdingsResponse = await page.request.get('/api/portfolio/holdings');
   expect(holdingsResponse.status()).toBe(200);
   const holdingsBody = await holdingsResponse.json();
   const holdings = holdingsBody.data.holdings as Array<{ daily_pnl: number }>;
@@ -63,12 +63,12 @@ test('investor uses an HTTP-only session and sees reporting/security', async ({ 
 
   await page.goto('/dashboard/investor/valuations');
   await expect(page.getByRole('heading', { name: 'My Fund P&L Allocations' })).toBeVisible();
-  const valuationHistory = await page.request.get('http://localhost:8000/api/portfolio/valuation-history');
+  const valuationHistory = await page.request.get('/api/portfolio/valuation-history');
   expect(valuationHistory.status()).toBe(200);
-  const managerValuations = await page.request.get('http://localhost:8000/api/manager/valuations');
+  const managerValuations = await page.request.get('/api/manager/valuations');
   expect(managerValuations.status()).toBe(403);
 
-  const forbidden = await page.request.get('http://localhost:8000/api/admin/stats');
+  const forbidden = await page.request.get('/api/admin/stats');
   expect(forbidden.status()).toBe(403);
   await page.goto('/dashboard/investor/fund-flows');
   await expect(page.getByRole('heading', { name: 'Fund Flows' })).toBeVisible();
@@ -83,9 +83,9 @@ test('operations can review flows but cannot enter investor portfolio', async ({
   await expect(page.getByText('Loading fund flows...')).not.toBeVisible();
   await page.goto('/dashboard/investor');
   await expect(page).toHaveURL(/\/unauthorized/);
-  const forbidden = await page.request.get('http://localhost:8000/api/portfolio/summary');
+  const forbidden = await page.request.get('/api/portfolio/summary');
   expect(forbidden.status()).toBe(403);
-  const managerValuations = await page.request.get('http://localhost:8000/api/manager/valuations');
+  const managerValuations = await page.request.get('/api/manager/valuations');
   expect(managerValuations.status()).toBe(403);
 });
 
@@ -98,27 +98,48 @@ test('manager can open attribution and what-if analysis', async ({ page }) => {
   await page.goto('/dashboard/manager/valuations');
   await expect(page.getByRole('heading', { name: 'Daily Fund Valuation' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preview calculation' })).toBeVisible();
-  const historyResponse = await page.request.get('http://localhost:8000/api/manager/valuations');
+  const historyResponse = await page.request.get('/api/manager/valuations');
   expect(historyResponse.status()).toBe(200);
 
-  const response = await page.request.get('http://localhost:8000/api/manager/performance-analysis');
+  const fundsResponse = await page.request.get('/api/manager/funds');
+  expect(fundsResponse.status()).toBe(200);
+  const managedFunds = (await fundsResponse.json()).data.funds as Array<{
+    id: number; fund_type: string; is_active: boolean; review_status: string;
+  }>;
+  const valuationEligible = managedFunds.filter(
+    (fund) => fund.fund_type !== 'stock' && fund.is_active && fund.review_status === 'approved',
+  );
+  expect(valuationEligible).toHaveLength(13);
+
+  const automaticSuggestion = await page.request.get(
+    '/api/manager/valuations/suggestion?fund_id=2&valuation_date=2026-08-03',
+  );
+  expect(automaticSuggestion.status()).toBe(200);
+  const suggestion = (await automaticSuggestion.json()).data as {
+    available: boolean; suggested_daily_pnl: number | null; source: string | null;
+  };
+  expect(suggestion.available).toBe(true);
+  expect(suggestion.suggested_daily_pnl).not.toBeNull();
+  expect(suggestion.source).toBe('alpaca_daily_bars');
+
+  const response = await page.request.get('/api/manager/performance-analysis');
   expect(response.status()).toBe(200);
   const body = await response.json();
   const analysis = body.data as { portfolio_return_pct: number; drivers: Array<{ contribution_pct: number }> };
   const contributionTotal = analysis.drivers.reduce((sum, driver) => sum + driver.contribution_pct, 0);
   expect(analysis.portfolio_return_pct).toBeCloseTo(contributionTotal, 8);
-  const forbidden = await page.request.get('http://localhost:8000/api/admin/stats');
+  const forbidden = await page.request.get('/api/admin/stats');
   expect(forbidden.status()).toBe(403);
 });
 
 test('admin can read administration data but not impersonate an investor portfolio', async ({ page }) => {
   await login(page, 'admin@fundinv.com', 'admin123', '/dashboard/admin');
-  const stats = await page.request.get('http://localhost:8000/api/admin/stats');
+  const stats = await page.request.get('/api/admin/stats');
   expect(stats.status()).toBe(200);
-  const forbidden = await page.request.get('http://localhost:8000/api/portfolio/summary');
+  const forbidden = await page.request.get('/api/portfolio/summary');
   expect(forbidden.status()).toBe(403);
   await page.goto('/dashboard/admin/valuations');
   await expect(page.getByRole('heading', { name: 'Fund Valuation Audit' })).toBeVisible();
-  const valuations = await page.request.get('http://localhost:8000/api/admin/valuations');
+  const valuations = await page.request.get('/api/admin/valuations');
   expect(valuations.status()).toBe(200);
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Card from '../../../components/Card';
 import Button from '../../../components/Button';
 import Input from '../../../components/Input';
@@ -29,6 +29,7 @@ export default function ManagerValuationsPage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const suggestionRequestId = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -48,18 +49,22 @@ export default function ManagerValuationsPage() {
   useEffect(() => { load(); }, [load]);
 
   const refreshSuggestion = useCallback(async () => {
+    const requestId = ++suggestionRequestId.current;
     if (!fundId || !valuationDate) {
       setSuggestion(null);
+      setSuggestionLoading(false);
       return;
     }
     setSuggestionLoading(true);
     setSuggestionError('');
     try {
       const result = await api.get<Suggestion>(`/api/manager/valuations/suggestion?fund_id=${encodeURIComponent(fundId)}&valuation_date=${encodeURIComponent(valuationDate)}`);
+      if (requestId !== suggestionRequestId.current) return;
       setSuggestion(result);
       setDailyPnl(result.available && result.suggested_daily_pnl !== null ? result.suggested_daily_pnl.toFixed(2) : '');
       setPreview(null);
     } catch (err) {
+      if (requestId !== suggestionRequestId.current) return;
       setSuggestion(null);
       setDailyPnl('');
       const apiError = err as { status?: number; message?: string };
@@ -70,7 +75,7 @@ export default function ManagerValuationsPage() {
           : apiError.message || 'Unable to calculate P&L from market data'
       );
     } finally {
-      setSuggestionLoading(false);
+      if (requestId === suggestionRequestId.current) setSuggestionLoading(false);
     }
   }, [fundId, valuationDate]);
 

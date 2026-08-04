@@ -1,16 +1,18 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const externalBaseURL = process.env.PLAYWRIGHT_BASE_URL;
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
   fullyParallel: false,
   reporter: 'line',
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: externalBaseURL || 'http://localhost:3000',
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: [
+  webServer: externalBaseURL ? undefined : [
     {
       command: 'NODE_OPTIONS=--max-old-space-size=2048 npm run build -- --webpack && npm run start -- --hostname localhost --port 3000',
       url: 'http://localhost:3000',
